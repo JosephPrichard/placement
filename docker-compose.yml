@@ -1,0 +1,25 @@
+version: "1"
+
+volumes:
+  scylla-data:
+    driver: local
+
+services:
+  scylla:
+    image: scylladb/scylla:4.6.0
+    environment:
+      - SCYLLA_CLUSTER_NAME=ScyllaCluster
+      - SCYLLA_LISTEN_ADDRESS=0.0.0.0
+      - SCYLLA_SEEDS=scylla
+    ports:
+      - "9042:9042"  # CQL port
+      - "7000:7000"  # Internode communication
+      - "7001:7001"  # TLS internode communication
+      - "7199:7199"  # JMX port
+      - "9142:9142"  # Scylla monitoring port
+    volumes:
+      - scylla-data:/var/lib/scylla
+  keydb:
+    image: eqalpha/keydb
+    ports:
+      - "6380:6379"
