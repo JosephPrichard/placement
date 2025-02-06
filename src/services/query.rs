@@ -1,13 +1,16 @@
-use crate::services::models::{GroupKey, Tile, ServiceError, TileGroup, GROUP_LEN};
+use crate::services::models::{GroupKey, Placement, ServiceError, Stats, Tile, TileGroup, GROUP_LEN};
+use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
+use scylla::frame::value::Counter;
+use tracing::log::info;
 
 async fn create_keyspace(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
-    CREATE KEYSPACE IF NOT EXISTS pks
-    WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
-    "#;
+        CREATE KEYSPACE IF NOT EXISTS pks
+        WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
+        "#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -30,10 +33,9 @@ async fn create_tiles(session: &Session) -> Result<PreparedStatement, QueryError
 async fn create_stats(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
     CREATE TABLE IF NOT EXISTS pks.stats (
-        country varchar,
         ipaddress inet,
         times_placed counter,
-        PRIMARY KEY (country, ipaddress));"#;
+        PRIMARY KEY (ipaddress));"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -41,19 +43,19 @@ async fn create_stats(session: &Session) -> Result<PreparedStatement, QueryError
 async fn create_placement(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
     CREATE TABLE IF NOT EXISTS pks.placements (
-        hour int,
+        hour bigint,
         x int,
         y int,
         color tinyint,
         ipaddress inet,
         placement_time timestamp,
-        PRIMARY KEY (hour, ipaddress, placement_time));"#;
+        PRIMARY KEY (hour, placement_time, ipaddress));"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
 
 async fn increment_times_stat(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = "UPDATE pks.stats SET times_placed = times_placed + 1 WHERE country = ? AND ipaddress = ?;";
+    let query = "UPDATE pks.stats SET times_placed = times_placed + 1 WHERE ipaddress = ?;";
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -66,43 +68,62 @@ async fn insert_placement(session: &Session) -> Result<PreparedStatement, QueryE
 
 async fn update_tile(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
-    INSERT INTO pks.tiles
-        (group_x, group_y, x, y, color, last_updated_ipaddress, last_updated_time)
-    VALUES
-        (?, ?, ?, ?, ?, ?, ?);"#;
+        INSERT INTO pks.tiles (group_x, group_y, x, y, color, last_updated_ipaddress, last_updated_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?);"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
 
 async fn get_one_tile(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
-    SELECT x, y, color, last_updated_time
-    FROM pks.tiles
-    WHERE group_x = ?
-        AND group_y = ?
-        AND x = ?
-        AND y = ?
-    LIMIT 1;"#;
+        SELECT x, y, color, last_updated_time
+        FROM pks.tiles
+        WHERE group_x = ?
+            AND group_y = ?
+            AND x = ?
+            AND y = ?
+        LIMIT 1;"#;
+    let prepared: PreparedStatement = session.prepare(query).await?;
+    Ok(prepared)
+}
+
+async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryError> {
+    let query = r#"
+        SELECT x, y, color, ipaddress, placement_time
+        FROM pks.placements
+        WHERE hour = ? AND placement_time < ?;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
 
 async fn get_tile_group(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
-    SELECT x, y, color
-    FROM pks.tiles
-    WHERE group_x = ? AND group_y = ?;"#;
+        SELECT x, y, color
+        FROM pks.tiles
+        WHERE group_x = ? AND group_y = ?;"#;
+    let prepared: PreparedStatement = session.prepare(query).await?;
+    Ok(prepared)
+}
+
+async fn get_times_placed(session: &Session) -> Result<PreparedStatement, QueryError> {
+    let query = r#"
+        SELECT times_placed
+        FROM pks.stats
+        WHERE ipaddress = ?;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
 
 pub struct QueryStore {
-    session: Session,
+    pub session: Session,
+    
     insert_placement: PreparedStatement,
     increment_times_stat: PreparedStatement,
     get_one_tile: PreparedStatement,
     get_tile_group: PreparedStatement,
+    get_placements: PreparedStatement,
     update_tile: PreparedStatement,
+    get_stats: PreparedStatement,
 }
 
 impl QueryStore {
@@ -112,7 +133,9 @@ impl QueryStore {
             increment_times_stat: increment_times_stat(&session).await?,
             get_one_tile: get_one_tile(&session).await?,
             get_tile_group: get_tile_group(&session).await?,
+            get_placements: get_placements(&session).await?,
             update_tile: update_tile(&session).await?,
+            get_stats: get_times_placed(&session).await?,
             session
         };
         Ok(query)
@@ -130,9 +153,11 @@ impl QueryStore {
 
         let mut group = [[0i8; GROUP_LEN]; GROUP_LEN];
         while let Some(row) = rows_stream.next().await {
-            let (x, y, color, ) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming rows"))?;
+            let (x, y, color, ) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile   rows"))?;
             group[x as usize][y as usize] = color;
         }
+
+        info!("Selected tile group with x={}, y={}", x, y);
         Ok(group)
     }
 
@@ -143,15 +168,56 @@ impl QueryStore {
             .execute_iter(self.get_one_tile.clone(), (grp_key.0, grp_key.1, x, y))
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when selecting one tile"))?
-            .rows_stream::<(i32, i32, i8, CqlTimestamp, )>()
+            .rows_stream::<(i32, i32, i8, CqlTimestamp)>()
             .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select tile result"))?;
 
         match rows_stream.next().await {
             Some(row) => {
-                let (x, y, color, last_updated_time ) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming rows"))?;
-                Ok(Tile { x, y, color, last_updated_time })
+                let (x, y, color, last_updated_time) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile rows"))?;
+                let tile = Tile { x, y, color, last_updated_time };
+                info!("Selected one tile={:?}", tile);
+                Ok(tile)
             },
             None => Err(ServiceError::NotFoundError(String::from("tile not found at given location")))
+        }
+    }
+
+    pub async fn get_placements(&self, after_time: DateTime<Utc>) -> Result<Vec<Placement>, ServiceError> {
+        let after_millis = after_time.timestamp_millis();
+        let hour = after_millis / (1000 * 60 * 60);
+        
+        info!("Getting placements with hour={}, after_time={}", hour, after_time);
+
+        let mut rows_stream = self.session
+            .execute_iter(self.get_placements.clone(), (hour, CqlTimestamp(after_millis)))
+            .await
+            .map_err(|e| ServiceError::handle_fatal(e, "when selecting placements"))?
+            .rows_stream::<(i32, i32, i8, IpAddr, CqlTimestamp)>()
+            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select placement"))?;
+
+        let mut placements = vec![];
+        while let Some(row) = rows_stream.next().await {
+            let (x, y, color, ipaddress, placement_time) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming placement rows"))?;
+            placements.push(Placement { x, y, color, ipaddress, placement_time })
+        }
+        Ok(placements)
+    }
+
+    pub async fn get_times_placed(&self, ipaddress: IpAddr) -> Result<i64, ServiceError> {
+        let mut rows_stream = self.session
+            .execute_iter(self.get_stats.clone(),  (ipaddress, ))
+            .await
+            .map_err(|e| ServiceError::handle_fatal(e, "when selecting stats"))?
+            .rows_stream::<(Counter, )>()
+            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select stats result"))?;
+
+        match rows_stream.next().await {
+            Some(row) => {
+                let (times_placed, ) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming stats rows"))?;
+                info!("Selected times_placed={} for ip={}", times_placed.0, ipaddress);
+                Ok(times_placed.0)
+            },
+            None => Ok(0)
         }
     }
 
@@ -159,29 +225,39 @@ impl QueryStore {
         let grp_key = GroupKey::from_point(x, y);
         let time_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
+        
+        let values = (grp_key.0, grp_key.1, x, y, color, placer_ipaddress, placement_time);
+        info!("Updating tile record with values={:?}", values);
 
-        self.session.execute_unpaged(&self.update_tile, (grp_key.0, grp_key.1, x, y, color, placer_ipaddress, placement_time))
+        self.session.execute_unpaged(&self.update_tile, values)
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when updating tile"))?;
         Ok(())
     }
 
-    pub async fn increment_times_stat(&self, country: &str, ipaddress: IpAddr) -> Result<(), ServiceError> {
-        self.session.execute_unpaged(&self.increment_times_stat, (country, ipaddress))
+    pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
+        self.session.execute_unpaged(&self.increment_times_stat, (ipaddress, ))
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when incrementing times placed stat"))?;
         Ok(())
     }
 
-    pub async fn insert_placement_log(&self, x: i32, y: i32, color: i8, placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
-        let time_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    pub async fn insert_placement(&self, x: i32, y: i32, color: i8, placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
+        let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let hour = (time_now.as_secs() / (60 * 60)) as i64;
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
 
-        self.session.execute_unpaged(&self.insert_placement, (hour, x, y, color, placer_ipaddress, placement_time))
+        let values = (hour, x, y, color, placer_ipaddress, placement_time);
+        info!("Inserting a placement record {:?}", values);
+        
+        self.session.execute_unpaged(&self.insert_placement, values)
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when inserting placement"))?;
         Ok(())
+    }
+    
+    pub async fn insert_placement_now(&self, x: i32, y: i32, color: i8, placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
+        self.insert_placement(x, y, color, placer_ipaddress, SystemTime::now()).await
     }
 }
 
@@ -191,55 +267,4 @@ pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
     session.execute_unpaged(&create_stats(session).await?, ()).await?;
     session.execute_unpaged(&create_placement(session).await?, ()).await?;
     Ok(())
-}
-
-mod test {
-    use crate::services::models::{Tile, ServiceError, TileGroup, GROUP_LEN};
-    use crate::services::query::{create_schema, QueryStore};
-    use scylla::SessionBuilder;
-    use std::net::{IpAddr, Ipv4Addr};
-    use scylla::frame::value::CqlTimestamp;
-
-    async fn init_queries() -> QueryStore {
-        let session = SessionBuilder::new()
-            .known_node("127.0.0.1:9042")
-            .build()
-            .await
-            .unwrap();
-        session.query_unpaged("DROP KEYSPACE IF EXISTS pks;", ()).await.unwrap();
-        create_schema(&session).await.unwrap();
-        QueryStore::init_queries(session).await.unwrap()
-    }
-
-    async fn test_get_then_update_tile(query: &QueryStore) {
-        let result = query.get_one_tile(1, 1).await;
-        
-        query.update_tile(5, 4, 2, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-        let tile = query.get_one_tile(5, 4).await.unwrap();
-
-        assert_eq!(result, Err(ServiceError::NotFoundError(String::from("tile not found at given location"))));
-        assert_eq!(tile, Tile { x: 5, y: 4, color: 2, last_updated_time: CqlTimestamp(0) });
-    }
-
-    async fn test_get_tile_group(query: &QueryStore) {
-        query.update_tile(0, 0, 1, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-        query.update_tile(2, 0, 5, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-        query.update_tile((GROUP_LEN + 1) as i32, (GROUP_LEN + 1) as i32, 5, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-        let tiles = query.get_tile_group(0, 0).await.unwrap();
-
-        let mut expected = [[0i8; GROUP_LEN]; GROUP_LEN];
-        expected[0][0] = 1;
-        expected[2][0] = 5;
-
-        assert_eq!(tiles, expected)
-    }
-
-    #[tokio::test]
-    async fn test_store_integration() {
-        // let query = init_queries().await;
-        // test_get_then_update_tile(&query).await;
-
-        let query = init_queries().await;
-        test_get_tile_group(&query).await;
-    }
 }

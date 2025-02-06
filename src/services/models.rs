@@ -1,8 +1,9 @@
 use std::fmt::Debug;
-use log::error;
+use std::net::IpAddr;
 use scylla::{DeserializeValue, SerializeValue};
 use scylla::frame::value::CqlTimestamp;
 use serde::{Deserialize, Serialize};
+use tracing::log::error;
 
 pub const GROUP_LEN: usize = 100;
 
@@ -16,6 +17,29 @@ impl GroupKey {
         let group_from_y = (y / tiles_per_group) * tiles_per_group;
         GroupKey(group_from_x, group_from_y)
     }
+}
+
+#[derive(Debug)]
+pub struct Placement {
+    pub x: i32,
+    pub y: i32,
+    pub color: i8,
+    pub ipaddress: IpAddr,
+    pub placement_time: CqlTimestamp,
+}
+
+impl PartialEq for Placement {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x && self.y == other.y && self.color == other.color && self.ipaddress == other.ipaddress
+    }
+}
+
+impl Eq for Placement {}
+
+#[derive(Debug)]
+pub struct Stats {
+    pub ipaddress: IpAddr,
+    pub times_placed: i32,
 }
 
 #[derive(Debug)]
