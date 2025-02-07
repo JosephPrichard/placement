@@ -14,7 +14,7 @@ const CHANNEL_BUS_NM: &str = "message-bus";
 pub struct DrawMsg {
     pub x: i32,
     pub y: i32,
-    pub color: i8,
+    pub rgb: (i8, i8, i8),
 }
 
 pub fn create_message_subscriber(client: Arc<redis::Client>, tx: Arc<broadcast::Sender<DrawMsg>>) -> JoinHandle<Result<(), ServiceError>> {

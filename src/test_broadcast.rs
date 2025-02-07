@@ -7,14 +7,13 @@ use tracing::log::{error, info};
 use crate::services::broadcast::{create_message_subscriber, broadcast_message, DrawMsg};
 
 mod services;
-mod web;
 
 async fn test_broadcast() {
     let draw_msgs = vec![
-        DrawMsg{ x: 0, y: 0, color: 0 },
-        DrawMsg{ x: 1, y: 0, color: 1 },
-        DrawMsg{ x: 0, y: 1, color: 2 },
-        DrawMsg{ x: 1, y: 1, color: 3 }
+        DrawMsg{ x: 0, y: 0, rgb: (0, 0, 0) },
+        DrawMsg{ x: 1, y: 0, rgb: (1, 1, 1) },
+        DrawMsg{ x: 0, y: 1, rgb: (2, 2, 2) },
+        DrawMsg{ x: 1, y: 1, rgb: (3, 3, 3) }
     ];
 
     let client = Arc::new(redis::Client::open("redis://127.0.0.1:6380/").unwrap());

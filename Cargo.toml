@@ -5,11 +5,15 @@ edition = "2021"
 
 [[bin]]
 name = "place-query-test"
-path = "src/query_test.rs"
+path = "src/test_query.rs"
 
 [[bin]]
 name = "place-broadcast-test"
-path = "src/broadcast_test.rs"
+path = "src/test_broadcast.rs"
+
+[[bin]]
+name = "place-cache-test"
+path = "src/test_cache.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
