@@ -1,6 +1,6 @@
 use redis::{Commands, Connection};
 use tracing::log::info;
-use crate::services::models::{GroupKey, ServiceError, TileGroup, GROUP_LEN};
+use crate::server::models::{GroupKey, ServiceError, TileGroup, GROUP_LEN};
 
 pub fn set_tile_group(conn: &mut Connection, key: GroupKey, group: TileGroup) -> Result<(), ServiceError> {
     let key_str = format!("({},{})", key.0, key.1);

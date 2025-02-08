@@ -3,19 +3,11 @@ use bincode;
 use futures_util::StreamExt;
 use redis::{Commands, Connection};
 use tokio::task::JoinHandle;
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::log::{error, info, warn};
-use crate::services::models::{ServiceError, TileGroup};
+use crate::server::models::{DrawMsg, ServiceError};
 
 const CHANNEL_BUS_NM: &str = "message-bus";
-
-#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
-pub struct DrawMsg {
-    pub x: i32,
-    pub y: i32,
-    pub rgb: (i8, i8, i8),
-}
 
 pub fn create_message_subscriber(client: Arc<redis::Client>, tx: Arc<broadcast::Sender<DrawMsg>>) -> JoinHandle<Result<(), ServiceError>> {
     tokio::spawn(async move {

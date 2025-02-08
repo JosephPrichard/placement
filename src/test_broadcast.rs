@@ -3,10 +3,11 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
-use tracing::log::{error, info};
-use crate::services::broadcast::{create_message_subscriber, broadcast_message, DrawMsg};
+use tracing::log::{info};
+use crate::server::broadcast::{broadcast_message, create_message_subscriber};
+use server::models::DrawMsg;
 
-mod services;
+mod server;
 
 async fn test_broadcast() {
     let draw_msgs = vec![

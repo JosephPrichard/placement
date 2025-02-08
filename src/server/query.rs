@@ -1,12 +1,13 @@
-use crate::services::models::{GroupKey, Placement, ServiceError, Stats, Tile, TileGroup, GROUP_DIM};
-use chrono::{DateTime, Utc};
+use crate::server::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
+use chrono::{DateTime, TimeZone, Utc};
 use futures_util::StreamExt;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
+use std::fmt::Debug;
 use scylla::frame::value::Counter;
 use tracing::log::info;
 
-async fn create_keyspace(session: &Session) -> Result<PreparedStatement, QueryError> {
+async fn create_test_keyspace(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
         CREATE KEYSPACE IF NOT EXISTS pks
         WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
@@ -116,7 +117,6 @@ async fn get_times_placed(session: &Session) -> Result<PreparedStatement, QueryE
 
 pub struct QueryStore {
     pub session: Session,
-    
     insert_placement: PreparedStatement,
     increment_times_stat: PreparedStatement,
     get_one_tile: PreparedStatement,
@@ -153,11 +153,9 @@ impl QueryStore {
         Ok(QueryStore { insert_placement, increment_times_stat, get_one_tile, get_tile_group, get_placements, update_tile, get_stats, session })
     }
 
-    pub async fn get_tile_group(&self, x: i32, y: i32) -> Result<TileGroup, ServiceError> {
-        let grp_key = GroupKey::from_point(x, y);
-
+    pub async fn get_tile_group(&self, key: GroupKey) -> Result<TileGroup, ServiceError> {
         let mut rows_stream = self.session
-            .execute_iter(self.get_tile_group.clone(), (grp_key.0, grp_key.1))
+            .execute_iter(self.get_tile_group.clone(), (key.0, key.1))
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when selecting tile group"))?
             .rows_stream::<(i32, i32, (i8, i8, i8))>()
@@ -169,7 +167,7 @@ impl QueryStore {
             group.set(x as usize, y as usize, rgb);
         }
 
-        info!("Selected tile group with x={}, y={}", x, y);
+        info!("Selected tile group with x={}, y={}", key.0, key.1);
         Ok(group)
     }
 
@@ -186,7 +184,8 @@ impl QueryStore {
         match rows_stream.next().await {
             Some(row) => {
                 let (x, y, rgb, last_updated_time) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile rows"))?;
-                let tile = Tile { x, y, rgb, last_updated_time };
+                let date: String = format!("{}", Utc.timestamp_millis_opt(last_updated_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
+                let tile = Tile { x, y, rgb, date };
                 info!("Selected one tile={:?}", tile);
                 Ok(tile)
             },
@@ -211,7 +210,8 @@ impl QueryStore {
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb, ipaddress, placement_time) = 
                 row.map_err(|e| ServiceError::handle_fatal(e, "while streaming placement rows"))?;
-            placements.push(Placement { x, y, rgb, ipaddress, placement_time })
+            let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
+            placements.push(Placement { x, y, rgb, ipaddress, placement_date })
         }
         Ok(placements)
     }
@@ -234,9 +234,9 @@ impl QueryStore {
         }
     }
 
-    pub async fn update_tile(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
+    pub async fn update_tile(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
-        let time_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
         
         let values = (grp_key.0, grp_key.1, x, y, rgb, placer_ipaddress, placement_time);
@@ -247,6 +247,10 @@ impl QueryStore {
             .await
             .map_err(|e| ServiceError::handle_fatal(e, "when updating tile"))?;
         Ok(())
+    }
+
+    pub async fn update_tile_now(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
+        self.update_tile(x, y, rgb, placer_ipaddress, SystemTime::now()).await
     }
 
     pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
@@ -277,7 +281,7 @@ impl QueryStore {
 }
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
-    session.execute_unpaged(&create_keyspace(session).await?, ()).await?;
+    session.execute_unpaged(&create_test_keyspace(session).await?, ()).await?;
     session.execute_unpaged(&create_tiles(session).await?, ()).await?;
     session.execute_unpaged(&create_stats(session).await?, ()).await?;
     session.execute_unpaged(&create_placement(session).await?, ()).await?;

@@ -4,23 +4,25 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "place-query-test"
+name = "test-query"
 path = "src/test_query.rs"
 
 [[bin]]
-name = "place-broadcast-test"
+name = "test-broadcast"
 path = "src/test_broadcast.rs"
 
 [[bin]]
-name = "place-cache-test"
+name = "test-cache"
 path = "src/test_cache.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
+rust-embed = "8.4.0"
+axum-embed = "0.1.0"
+dotenv = "0.15.0"
 redis = { version = "0.28.2", features = ["tokio-comp"] }
-rust-embed = "8.5.0"
 scylla = "0.15.1"
 tokio = { version = "1.43", features = ["full"] }
 futures-util = "0.3.31"

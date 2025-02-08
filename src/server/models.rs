@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::net::IpAddr;
-use scylla::{DeserializeValue, SerializeValue};
+use chrono::{DateTime, Utc};
 use scylla::frame::value::CqlTimestamp;
 use serde::{Deserialize, Serialize};
 use tracing::log::error;
@@ -8,7 +8,20 @@ use tracing::log::error;
 pub const GROUP_DIM: usize = 100;
 pub const GROUP_LEN: usize = GROUP_DIM * GROUP_DIM * 3;
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
+pub enum ServiceError {
+    FatalError(String),
+    NotFoundError(String),
+}
+
+impl ServiceError {
+    pub fn handle_fatal(e: impl Debug, m: &str) -> ServiceError {
+        let m = format!("Fatal error has occurred {}: {:?}", m, e);
+        ServiceError::FatalError(m)
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub struct GroupKey(pub i32, pub i32);
 
 impl GroupKey {
@@ -20,46 +33,24 @@ impl GroupKey {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
     pub x: i32,
     pub y: i32,
     pub rgb: (i8, i8, i8),
     pub ipaddress: IpAddr,
-    pub placement_time: CqlTimestamp,
+    pub placement_date: String,
 }
 
-impl PartialEq for Placement {
-    fn eq(&self, other: &Self) -> bool {
-        self.x == other.x && self.y == other.y && self.rgb == other.rgb && self.ipaddress == other.ipaddress
-    }
-}
-
-impl Eq for Placement {}
-
-#[derive(Debug)]
-pub struct Stats {
-    pub ipaddress: IpAddr,
-    pub times_placed: i32,
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tile {
     pub x: i32,
     pub y: i32,
     pub rgb: (i8, i8, i8),
-    pub last_updated_time: CqlTimestamp,
+    pub date: String,
 }
 
-impl PartialEq for Tile {
-    fn eq(&self, other: &Self) -> bool {
-        self.x == other.x && self.y == other.y && self.rgb == other.rgb
-    }
-}
-
-impl Eq for Tile {}
-
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TileGroup(pub Vec<u8>);
 
 impl TileGroup {
@@ -75,20 +66,23 @@ impl TileGroup {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum ServiceError {
-    FatalError(String),
-    NotFoundError(String),
+#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
+pub struct DrawMsg {
+    pub x: i32,
+    pub y: i32,
+    pub rgb: (i8, i8, i8),
 }
 
-impl ServiceError {
-    pub fn handle_fatal(e: impl Debug, m: &str) -> ServiceError {
-        let m = format!("Fatal error has occurred {}: {:?}", m, e);
-        error!("{}", m);
-        ServiceError::FatalError(m)
-    }
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum CanvasInput {
+    DrawTile(DrawMsg),
+    GetGroup(GroupKey),
+    GetTileInfo((i32, i32)),
 }
 
-mod test {
-
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum CanvasOutput {
+    DrawEvent(DrawMsg),
+    Group(TileGroup),
+    TileInfo(Tile),
 }

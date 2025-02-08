@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use redis::Commands;
 use tracing::log::info;
-use crate::services::cache::{get_tile_group, set_tile_group};
-use crate::services::models::{GroupKey, TileGroup, GROUP_DIM};
+use server::cache::{get_tile_group, set_tile_group};
+use server::models::{GroupKey, TileGroup, GROUP_DIM};
 
-mod services;
+mod server;
 
 async fn test_cache() {
     let client = Arc::new(redis::Client::open("redis://127.0.0.1:6380/").unwrap());
@@ -27,9 +26,9 @@ async fn test_cache() {
     let group2 = get_tile_group(conn, GroupKey(GROUP_DIM as i32, GROUP_DIM as i32)).unwrap();
     let group3 = get_tile_group(conn, GroupKey((GROUP_DIM * 2) as i32, (GROUP_DIM * 2) as i32)).unwrap();
     
-    assert_eq!(group1_expected, group1.unwrap());
-    assert_eq!(group2_expected, group2.unwrap());
-    assert_eq!(group3, None);
+    assert_eq!(Some(group1_expected), group1);
+    assert_eq!(Some(group2_expected), group2);
+    assert_eq!(None, group3);
 }
 
 #[tokio::main]
@@ -37,8 +36,8 @@ async fn main() {
     tracing_subscriber::fmt().init();
 
     info!("Starting cache integration test");
-
+    
     test_cache().await;
-
+    
     info!("Successfully passed cache integration test");
 }

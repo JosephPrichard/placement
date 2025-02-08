@@ -1,13 +1,13 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::SystemTime;
 use chrono::{TimeZone, Utc};
-use scylla::frame::value::CqlTimestamp;
 use scylla::SessionBuilder;
 use tracing::log::info;
-use crate::services::models::{Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
-use crate::services::query::{create_schema, QueryStore};
+use server::models::{Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
+use server::query::{create_schema, QueryStore};
+use server::models::GroupKey;
 
-mod services;
+mod server;
 
 async fn init_queries() -> QueryStore {
     let session = SessionBuilder::new()
@@ -23,22 +23,24 @@ async fn init_queries() -> QueryStore {
 async fn test_get_then_update_tile(query: &QueryStore) {
     query.session.query_unpaged("TRUNCATE pks.tiles;", ()).await.unwrap();
     
-    let result = query.get_one_tile(1, 1).await;
+    let tile1 = query.get_one_tile(1, 1).await;
 
-    query.update_tile(5, 4, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-    let tile = query.get_one_tile(5, 4).await.unwrap();
+    let time = SystemTime::from(Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
+    
+    query.update_tile(5, 4, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), time).await.unwrap();
+    let tile2 = query.get_one_tile(5, 4).await;
 
-    assert_eq!(result, Err(ServiceError::NotFoundError(String::from("tile not found at given location"))));
-    assert_eq!(tile, Tile { x: 5, y: 4, rgb: (2, 2, 2), last_updated_time: CqlTimestamp(0) });
+    assert_eq!(tile1, Err(ServiceError::NotFoundError(String::from("tile not found at given location"))));
+    assert_eq!(tile2, Ok(Tile { x: 5, y: 4, rgb: (2, 2, 2), date: "2025/01/01 00:00:00".to_string() }));
 }
 
 async fn test_get_tile_group(query: &QueryStore) {
     query.session.query_unpaged("TRUNCATE pks.tiles;", ()).await.unwrap();
     
-    query.update_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-    query.update_tile(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-    query.update_tile((GROUP_DIM + 1) as i32, (GROUP_DIM + 1) as i32, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-    let tiles = query.get_tile_group(0, 0).await.unwrap();
+    query.update_tile_now(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
+    query.update_tile_now(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
+    query.update_tile_now((GROUP_DIM + 1) as i32, (GROUP_DIM + 1) as i32, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
+    let tiles = query.get_tile_group(GroupKey(0, 0)).await.unwrap();
 
     let mut expected = TileGroup::empty();
     expected.set(0, 0, (1, 1, 1));
@@ -66,13 +68,13 @@ async fn test_insert_then_get_placements(query: &QueryStore) {
         y: 0,
         rgb: (1, 1, 1),
         ipaddress: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)),
-        placement_time: CqlTimestamp(0),
+        placement_date: "2020/01/01 00:15:00".to_string(),
     }, Placement {
         x: 2,
         y: 0,
         rgb: (2, 2, 2),
         ipaddress: IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)),
-        placement_time: CqlTimestamp(0),
+        placement_date: "2020/01/01 00:30:00".to_string(),
     }];
     assert_eq!(placements, expected)
 }
