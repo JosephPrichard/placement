@@ -8,11 +8,11 @@ services:
       - SCYLLA_LISTEN_ADDRESS=0.0.0.0
       - SCYLLA_SEEDS=scylla
     ports:
-      - "9042:9042"  # CQL port
-      - "7000:7000"  # Internode communication
-      - "7001:7001"  # TLS internode communication
-      - "7199:7199"  # JMX port
-      - "9142:9142"  # Scylla monitoring port
+      - "9043:9042"  # CQL port
+      - "8000:7000"  # Internode communication
+      - "8001:7001"  # TLS internode communication
+      - "8199:7199"  # JMX port
+      - "10142:9142"  # Scylla monitoring port
   valkey-test:
     image: valkey/valkey
     ports:

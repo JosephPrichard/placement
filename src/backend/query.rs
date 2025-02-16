@@ -1,58 +1,40 @@
-use crate::server::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
+use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup};
 use chrono::{DateTime, TimeZone, Utc};
 use futures_util::StreamExt;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
-use std::fmt::Debug;
 use scylla::frame::value::Counter;
 use tracing::log::info;
 
-async fn create_test_keyspace(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
+pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
+    session.query_unpaged("\
         CREATE KEYSPACE IF NOT EXISTS pks
-        WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
-        "#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
-}
-
-async fn create_tiles(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
-    CREATE TABLE IF NOT EXISTS pks.tiles (
-        group_x int,
-        group_y int,
-        x int,
-        y int,
-        rgb tuple<tinyint, tinyint, tinyint>,
-        last_updated_ipaddress inet,
-        last_updated_time timestamp,
-        PRIMARY KEY ((group_x, group_y), x, y));"#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
-}
-
-async fn create_stats(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
-    CREATE TABLE IF NOT EXISTS pks.stats (
-        ipaddress inet,
-        times_placed counter,
-        PRIMARY KEY (ipaddress));"#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
-}
-
-async fn create_placement(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
-    CREATE TABLE IF NOT EXISTS pks.placements (
-        hour bigint,
-        x int,
-        y int,
-        rgb tuple<tinyint, tinyint, tinyint>,
-        ipaddress inet,
-        placement_time timestamp,
-        PRIMARY KEY (hour, placement_time, ipaddress));"#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
+            WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };", ()).await?;
+    session.query_unpaged("\
+        CREATE TABLE IF NOT EXISTS pks.tiles (
+            group_x int,
+            group_y int,
+            x int,
+            y int,
+            rgb tuple<tinyint, tinyint, tinyint>,
+            last_updated_ipaddress inet,
+            last_updated_time timestamp,
+            PRIMARY KEY ((group_x, group_y), x, y));", ()).await?;
+    session.query_unpaged("\
+        CREATE TABLE IF NOT EXISTS pks.stats (
+            ipaddress inet,
+            times_placed counter,
+            PRIMARY KEY (ipaddress));", ()).await?;
+    session.query_unpaged("\
+        CREATE TABLE IF NOT EXISTS pks.placements (
+            hour bigint,
+            x int,
+            y int,
+            rgb tuple<tinyint, tinyint, tinyint>,
+            ipaddress inet,
+            placement_time timestamp,
+            PRIMARY KEY (hour, placement_time, ipaddress));", ()).await?;
+    Ok(())
 }
 
 async fn increment_times_stat(session: &Session) -> Result<PreparedStatement, QueryError> {
@@ -160,11 +142,11 @@ impl QueryStore {
             .map_err(|e| ServiceError::handle_fatal(e, "when selecting tile group"))?
             .rows_stream::<(i32, i32, (i8, i8, i8))>()
             .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select tile group result"))?;
-
-        let mut group = TileGroup::empty();
+        
+        let mut group = TileGroup::empty(key.0, key.1);
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile rows"))?;
-            group.set(x as usize, y as usize, rgb);
+            group.set((x - key.0) as usize, (y - key.1) as usize, rgb);
         }
 
         info!("Selected tile group with x={}, y={}", key.0, key.1);
@@ -189,7 +171,7 @@ impl QueryStore {
                 info!("Selected one tile={:?}", tile);
                 Ok(tile)
             },
-            None => Err(ServiceError::NotFoundError(String::from("tile not found at given location")))
+            None => Err(ServiceError::NotFoundError(format!("tile not found at given location: {:?}", (x, y))))
         }
     }
 
@@ -210,6 +192,7 @@ impl QueryStore {
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb, ipaddress, placement_time) = 
                 row.map_err(|e| ServiceError::handle_fatal(e, "while streaming placement rows"))?;
+            
             let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
             placements.push(Placement { x, y, rgb, ipaddress, placement_date })
         }
@@ -278,12 +261,4 @@ impl QueryStore {
     pub async fn insert_placement_now(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
         self.insert_placement(x, y, rgb, placer_ipaddress, SystemTime::now()).await
     }
-}
-
-pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
-    session.execute_unpaged(&create_test_keyspace(session).await?, ()).await?;
-    session.execute_unpaged(&create_tiles(session).await?, ()).await?;
-    session.execute_unpaged(&create_stats(session).await?, ()).await?;
-    session.execute_unpaged(&create_placement(session).await?, ()).await?;
-    Ok(())
 }

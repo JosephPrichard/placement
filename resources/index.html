@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Placement</title>
+    <link rel="stylesheet" href="index.css">
+    <script src="scripts.js"></script>
+    <script>
+        /** @Type {ConnState} */
+        const socketState = {
+            socket: null,
+            connectTries: 0,
+        };
+
+        /** @Type {CanvasState} */
+        const canvasState = {
+            groupMap: new Map(),
+            ctx: null,
+            centerX: 0,
+            centerY: 0,
+        };
+
+        tryConnect(socketState);
+    </script>
+</head>
+<body>
+    <div id="sidebar">
+    </div>
+    <canvas id="canvas" class="global-canvas"></canvas>
+</body>

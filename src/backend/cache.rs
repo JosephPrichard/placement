@@ -1,10 +1,10 @@
 use redis::{Commands, Connection};
 use tracing::log::info;
-use crate::server::models::{GroupKey, ServiceError, TileGroup, GROUP_LEN};
+use crate::backend::models::{GroupKey, ServiceError, TileGroup, GROUP_LEN};
 
 pub fn set_tile_group(conn: &mut Connection, key: GroupKey, group: TileGroup) -> Result<(), ServiceError> {
     let key_str = format!("({},{})", key.0, key.1);
-    conn.set(key_str, group.0.as_slice())
+    conn.set::<_, _, ()>(key_str, group.2.as_slice())
         .map_err(|e| ServiceError::handle_fatal(e, "while setting tile group in cache using key"))?;
     
     info!("Set tile group with key={:?} into the cache", key);
@@ -24,6 +24,6 @@ pub fn get_tile_group(conn: &mut Connection, key: GroupKey) -> Result<Option<Til
     } else if buffer.len() != GROUP_LEN {
         Err(ServiceError::FatalError(format!("Tile group buffer length was of length {}, should be {}", buffer.len(), GROUP_LEN)))
     } else {
-        Ok(Some(TileGroup(buffer)))
+        Ok(Some(TileGroup(key.0, key.1, buffer)))
     }
 }

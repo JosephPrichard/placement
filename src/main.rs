@@ -1,25 +1,24 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use rust_embed::RustEmbed;
-use axum::Router;
+use axum::{Router};
 use axum::routing::get;
-use axum_embed::ServeEmbed;
-use server::query::QueryStore;
+use backend::query::QueryStore;
 use scylla::{Session, SessionBuilder};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::log::info;
-use crate::server::ws::{ws_handler, Server};
+use crate::backend::broadcast::create_message_subscriber;
+use crate::backend::server::{ws_handler, Server};
 
-mod server;
-
-#[derive(RustEmbed, Clone)]
-#[folder = "assets"]
-struct Assets;
+mod backend;
 
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().unwrap();
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
     
     let scylla_uri = std::env::var("SCYLLA_URI").expect("Missing SCYLLA_URI env variable");
     let redis_url = std::env::var("REDIS_URL").expect("Missing REDIS_URL env variable");
@@ -35,16 +34,21 @@ async fn main() {
 
     let server = Server{ query: Arc::new(query), client: Arc::new(client), tx: Arc::new(tx), };
 
-    let serve_assets = ServeEmbed::<Assets>::new();
+    let subscriber_handle = create_message_subscriber(server.client.clone(), server.tx.clone());
+
+    let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
 
     let router = Router::new()
         .route("/canvas", get(ws_handler))
-        .fallback_service(serve_assets)
-        .with_state(server);
+        .with_state(server)
+        .fallback_service(serve_resources);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("Server running at {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, router).await.unwrap();
+
+    info!("Stopped the backend. Shutting down the subscriber task.");
+    subscriber_handle.abort();
 }

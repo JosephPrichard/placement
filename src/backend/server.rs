@@ -4,15 +4,16 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use redis::{Client, Connection};
 use tokio::sync::{broadcast, Mutex};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
-use tracing::log::{error, info, warn};
-use crate::server::cache::get_tile_group;
-use crate::server::models::{CanvasInput, CanvasOutput, DrawMsg, GroupKey, ServiceError, TileGroup};
-use crate::server::query::QueryStore;
+use tracing::log::{debug, error, info, warn};
+use crate::backend::broadcast::broadcast_message;
+use crate::backend::cache::get_tile_group;
+use crate::backend::models::{Input, TextOutput, DrawMsg, GroupKey, ServiceError, BinaryOutput};
+use crate::backend::query::QueryStore;
 
 #[derive(Clone)]
 pub struct Server {
@@ -26,14 +27,21 @@ async fn handle_recv(server: Server, mut rx: SplitStream<WebSocket>, tx: Arc<Mut
         info!("Starting the recv loop");
         let conn = &mut server.client.get_connection().unwrap();
         while let Some(result) = rx.next().await {
-            let inbuf: Vec<u8> = match result {
-                Ok(msg) => msg.into(),
+            let in_msg = match result {
+                Ok(msg) => msg,
                 Err(err) => {
                     error!("Failed to recv a buffer from socket: {}", err);
                     continue;
                 },
             };
-            let input: CanvasInput = match bincode::deserialize(inbuf.as_slice()) {
+            let in_str = match in_msg.to_text() {
+                Ok(text) => text,
+                Err(err) => {
+                    error!("Failed to convert binary buffer to utf8 encoding: {}", err);
+                    continue;
+                },
+            };
+            let input: Input = match serde_json::from_str(in_str) {
                 Ok(structure) => structure,
                 Err(err) => {
                     error!("Failed to deserialize an input structure from recv buffer: {}", err);
@@ -41,15 +49,15 @@ async fn handle_recv(server: Server, mut rx: SplitStream<WebSocket>, tx: Arc<Mut
                 },
             };
             let result = match input {
-                CanvasInput::DrawTile(draw) => {
+                Input::DrawTile(draw) => {
                     info!("Received a draw_msg={:?} input", draw);
-                    server.query.update_tile_now(draw.x, draw.y, draw.rgb, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0))).await
+                    handle_draw_tile(&server, conn, draw).await
                 },
-                CanvasInput::GetGroup(key) => {
+                Input::GetGroup(key) => {
                     info!("Received a get_group={:?} input", key);
                     handle_get_group(&server, conn, tx.as_ref(), key).await
                 },
-                CanvasInput::GetTileInfo((x, y)) => {
+                Input::GetTileInfo((x, y)) => {
                     info!("Received a get_tile_info={:?} input", (x, y));
                     handle_get_tile_info(&server, tx.as_ref(), x, y).await
                 },
@@ -61,6 +69,12 @@ async fn handle_recv(server: Server, mut rx: SplitStream<WebSocket>, tx: Arc<Mut
     })
 }
 
+async fn handle_draw_tile(server: &Server, conn: &mut Connection, draw: DrawMsg) -> Result<(), ServiceError> {
+    server.query.update_tile_now(draw.x, draw.y, draw.rgb, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0))).await?;
+    broadcast_message(conn, draw)?;
+    Ok(())
+}
+
 async fn handle_get_group(server: &Server, conn: &mut Connection, tx: &Mutex<SplitSink<WebSocket, Message>>, key: GroupKey) -> Result<(), ServiceError> {
     let group_opt = get_tile_group(conn, key)?;
     let group = match group_opt {
@@ -68,28 +82,41 @@ async fn handle_get_group(server: &Server, conn: &mut Connection, tx: &Mutex<Spl
         Some(group) => group
     };
 
-    let output = CanvasOutput::Group(group);
+    let output = BinaryOutput::Group(group);
     let buffer = bincode::serialize(&output).map_err(|e| ServiceError::handle_fatal(e, "while serializing canvas output group"))?;
     
     let mut tx = tx.lock().await;
-    if let Err(err) = tx.send(Message::from(buffer)).await {
-        error!("Failed to send tile group buffer over socket: {}", err);
-    }
+    tx.send(Message::from(buffer)).await.map_err(|e| ServiceError::handle_fatal(e, "failed to send tile group buffer over socket:"))?;
     
     Ok(())
 }
 
 async fn handle_get_tile_info(server: &Server, tx: &Mutex<SplitSink<WebSocket, Message>>, x: i32, y: i32) -> Result<(), ServiceError> {
-    let tile = server.query.get_one_tile(x, y).await?;
+    match server.query.get_one_tile(x, y).await {
+        Ok(tile) => {
+            let output = TextOutput::TileInfo(tile);
+            let str = serde_json::to_string(&output).map_err(|e| ServiceError::handle_fatal(e, "while serializing canvas output tile info"))?;
 
-    let output = CanvasOutput::TileInfo(tile);
-    let buffer = bincode::serialize(&output).map_err(|e| ServiceError::handle_fatal(e, "while serializing canvas output tile info"))?;
+            let mut tx = tx.lock().await;
+            debug!("Sending canvas output tile info str={} over socket", str);
+            tx.send(Message::from(str)).await.map_err(|e| ServiceError::handle_fatal(e, "failed to send tile info buffer over socket:"))?;
 
-    let mut tx = tx.lock().await;
-    if let Err(err) = tx.send(Message::from(buffer)).await {
-        error!("Failed to send tile group buffer over socket: {}", err);
+            Ok(())
+        },
+        Err(ServiceError::NotFoundError(str)) => {
+            warn!("Not found: {}", str);
+
+            let output = TextOutput::Err(str);
+            let str = serde_json::to_string(&output).map_err(|e| ServiceError::handle_fatal(e, "while serializing canvas output err"))?;
+
+            let mut tx = tx.lock().await;
+            debug!("Sending canvas output err str={} over socket", str);
+            tx.send(Message::from(str)).await.map_err(|e| ServiceError::handle_fatal(e, "failed to send error buffer over socket:"))?;
+
+            Ok(())
+        },
+        Err(err) => Err(err)
     }
-    Ok(())
 }
 
 async fn handle_send(server: Server, tx: Arc<Mutex<SplitSink<WebSocket, Message>>>) -> JoinHandle<()> {
@@ -106,17 +133,18 @@ async fn handle_send(server: Server, tx: Arc<Mutex<SplitSink<WebSocket, Message>
                 }
             };
             
-            let output = CanvasOutput::DrawEvent(draw);
-            let buffer = match bincode::serialize(&output) {
+            let output = TextOutput::DrawEvent(draw);
+            let str = match serde_json::to_string(&output) {
                 Ok(buffer) => buffer,
                 Err(err) => {
-                    error!("Failed to recv serialize a draw msg: {}", err);
+                    error!("Failed to serialize a draw_msg={:?}: {}", draw, err);
                     continue;
                 }
             };
             
             let mut tx = tx.lock().await;
-            if let Err(err) = tx.send(Message::from(buffer)).await {
+            debug!("Sending canvas output draw event str={} over socket", str);
+            if let Err(err) = tx.send(Message::from(str)).await {
                 error!("Failed to send serialized draw msg over socket: {}", err);
             }
         }
@@ -124,7 +152,7 @@ async fn handle_send(server: Server, tx: Arc<Mutex<SplitSink<WebSocket, Message>
 }
 
 async fn handle_socket(socket: WebSocket, server: Server) {
-    info!("Websocket connection established with server");
+    info!("Websocket connection established with backend");
     
     let (tx, rx) = socket.split();
     let tx = Arc::new(Mutex::new(tx));

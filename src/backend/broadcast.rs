@@ -5,7 +5,7 @@ use redis::{Commands, Connection};
 use tokio::task::JoinHandle;
 use tokio::sync::broadcast;
 use tracing::log::{error, info, warn};
-use crate::server::models::{DrawMsg, ServiceError};
+use crate::backend::models::{DrawMsg, ServiceError};
 
 const CHANNEL_BUS_NM: &str = "message-bus";
 
@@ -19,9 +19,12 @@ pub fn create_message_subscriber(client: Arc<redis::Client>, tx: Arc<broadcast::
             .await
             .map_err(|e| ServiceError::handle_fatal(e, &format!("when subscribing from channel {}", CHANNEL_BUS_NM)))?;
         
+        info!("Began listening to pubsub subscribing to channel={}", CHANNEL_BUS_NM);
         while let Some(msg) = pubsub.on_message().next().await {
-            let payload : Vec<u8> = msg.get_payload()
+            let payload: Vec<u8> = msg.get_payload()
                 .map_err(|e| ServiceError::handle_fatal(e, "while extracting binary payload from pubsub message"))?;
+
+            info!("Received a payload of size={} on channel={}", payload.len(), msg.get_channel_name());
             
             match msg.get_channel_name() {
                 CHANNEL_BUS_NM => match bincode::deserialize::<DrawMsg>(&payload) {
@@ -43,7 +46,9 @@ pub fn broadcast_message(conn: &mut Connection, msg: DrawMsg) -> Result<(), Serv
     let bytes = bincode::serialize(&msg)
         .map_err(|e| ServiceError::handle_fatal(e, "when serializing draw_msg"))?;
     
-    conn.publish(CHANNEL_BUS_NM, bytes)
+    conn.publish::<_, _, ()>(CHANNEL_BUS_NM, bytes)
         .map_err(|e| ServiceError::handle_fatal(e, &format!("when publishing to channel {}", CHANNEL_BUS_NM)))?;
+    
+    info!("Broadcast a draw message {:?} onto channel {}", msg, CHANNEL_BUS_NM);
     Ok(())
 }
