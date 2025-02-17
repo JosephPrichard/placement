@@ -28,64 +28,6 @@ pub struct ServerState {
     pub query: Arc<QueryStore>,
 }
 
-pub async fn handle_ws(ws: WebSocketUpgrade, State(server): State<ServerState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| async move {
-        info!("Websocket connection established with server");
-        
-        let (mut tx, mut rx) = socket.split();
-        let mut sender = tokio::spawn(async move {
-            let mut rx = server.broadcast_tx.subscribe();
-
-            info!("Started waiting for messages on the broadcast subscriber");
-            loop {
-                let draw = match rx.recv().await {
-                    Ok(draw) => draw,
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(count)) => {
-                        warn!("Broadcast receiver lagged, missing {} messages", count);
-                        continue;
-                    }
-                };
-                
-                let str = match serde_json::to_string(&draw) {
-                    Ok(buffer) => buffer,
-                    Err(err) => {
-                        error!("Failed to serialize a draw_msg={:?}: {}", draw, err);
-                        continue;
-                    }
-                };
-
-                info!("Sending str={} over socket", str);
-                if let Err(err) = tx.send(Message::from(str)).await {
-                    error!("Failed to send serialized draw msg over socket: {}", err);
-                }
-            }
-        });
-        let mut listener = tokio::spawn(async move {
-            info!("Started waiting for close messages on the socket listener");
-            loop {
-                match rx.next().await {
-                    None => return,
-                    Some(_) => () // just ignore the messages, we don't care about receiving the content
-                }
-            }
-        });
-
-        tokio::select! {
-            _ = &mut listener => {
-                info!("Listener task ended, aborting sender task");
-                sender.abort()
-            },
-            _ = &mut sender => {
-                error!("Sender task ended, this should not happen");
-                listener.abort()
-            }
-        }
-
-        info!("Websocket connection closed");
-    })
-}
-
 pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = server.broadcast_tx.subscribe();
 

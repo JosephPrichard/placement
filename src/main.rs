@@ -1,5 +1,5 @@
 use crate::backend::broadcast::create_message_subscriber;
-use crate::backend::handlers::{handle_get_group, handle_get_tile, handle_post_tile, handle_sse, handle_ws};
+use crate::backend::handlers::{handle_get_group, handle_get_tile, handle_post_tile, handle_sse};
 use axum::routing::{get, post};
 use axum::Router;
 use backend::query::QueryStore;
@@ -45,7 +45,6 @@ async fn main() {
 
     let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
     let router = Router::new()
-        .route("/canvas-ws", get(handle_ws))
         .route("/canvas-sse", get(handle_sse))
         .route("/tile", get(handle_get_tile))
         .route("/tile", post(handle_post_tile))
