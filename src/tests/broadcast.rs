@@ -1,5 +1,5 @@
 use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
-use crate::backend::models::DrawMsg;
+use crate::backend::models::DrawEvent;
 use bb8_redis::bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use std::sync::Arc;
@@ -9,13 +9,13 @@ use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tracing::log::info;
 
-static DRAW_MSGS: [DrawMsg; 4] = [
+static DRAW_MSGS: [DrawEvent; 4] = [
     // these are in sorted order in respect to the derived order of the 'Ord' trait
     // we need these sorted to be able to do unordered assertions against other vectors which will compare in arbitrary orders
-    DrawMsg{ x: 0, y: 0, rgb: (0, 0, 0) },
-    DrawMsg{ x: 0, y: 1, rgb: (1, 1, 1) },
-    DrawMsg{ x: 1, y: 0, rgb: (2, 2, 2) },
-    DrawMsg{ x: 1, y: 1, rgb: (3, 3, 3) }
+    DrawEvent { x: 0, y: 0, rgb: (0, 0, 0) },
+    DrawEvent { x: 0, y: 1, rgb: (1, 1, 1) },
+    DrawEvent { x: 1, y: 0, rgb: (2, 2, 2) },
+    DrawEvent { x: 1, y: 1, rgb: (3, 3, 3) }
 ];
 
 async fn test_broadcast_messaging(client: redis::Client, pool: Pool<RedisConnectionManager>) {

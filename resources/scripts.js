@@ -60,7 +60,33 @@ function drawGroup(canvas, socket, x, y) {
  * @param e {MessageEvent<any>}
  */
 function handleMessage(conn, e) {
+    if (e.data instanceof ArrayBuffer) {
+        const buffer = e.data;
+        const array32 = new Uint32Array(buffer);
 
+        const type = array32[0];
+        if (type === 0) {
+            const x = array32[1];
+            const y = array32[2];
+            const group = new Uint8Array(buffer).subarray(12);
+        } else {
+            throw new Error("Unknown binary data type " + type);
+        }
+    } else if (e.data instanceof String) {
+        const data = JSON.parse(e.data);
+        const drawEvent = data["DrawEvent"];
+        const err = data["Err"];
+
+        if (drawEvent) {
+
+        } else if (err) {
+
+        } else {
+            throw new Error("Text data should contain TileInfo or DrawEvent field");
+        }
+    } else {
+        throw new Error("Message data should be a String (text) or an ArrayBuffer (binary)");
+    }
 }
 
 /**

@@ -1,5 +1,5 @@
 use crate::backend::broadcast::create_message_subscriber;
-use crate::backend::ws::{ws_handler, ServerState};
+use crate::backend::server::{get_tile_info, ws_handler};
 use axum::routing::get;
 use axum::{Router, ServiceExt};
 use backend::query::QueryStore;
@@ -13,11 +13,11 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::log::info;
-use crate::backend::database::{Database, External};
+use crate::backend::server::ServerState;
 
 mod backend;
 
-async fn init_server(scylla_uri: String, redis_url: String) -> ServerState<Database> {
+async fn init_server(scylla_uri: String, redis_url: String) -> ServerState {
     let session: Session = SessionBuilder::new()
         .known_node(scylla_uri)
         .build()
@@ -27,7 +27,7 @@ async fn init_server(scylla_uri: String, redis_url: String) -> ServerState<Datab
     let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
     let (tx, _) = broadcast::channel(1000);
 
-    ServerState { broadcast_tx: tx, external: Database{ query, redis } }
+    ServerState { broadcast_tx: tx, query, redis }
 }
 
 #[tokio::main]
@@ -47,6 +47,7 @@ async fn main() {
     let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
     let router = Router::new()
         .route("/canvas", get(ws_handler))
+        .route("/tile", get(get_tile_info))
         .with_state(server)
         .fallback_service(serve_resources);
 

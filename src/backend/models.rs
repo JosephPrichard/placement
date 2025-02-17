@@ -55,12 +55,16 @@ impl TileGroup {
     pub fn empty(x: i32, y: i32) -> TileGroup {
         TileGroup(x, y, vec![])
     }
+    
+    pub fn get_offset(x: usize, y: usize) -> usize {
+        (y * 3 * GROUP_DIM) + (x * 3)
+    }
 
     pub fn set(&mut self, x: usize, y: usize, rgb: (i8, i8, i8)) {
         if self.2.is_empty() {
             self.2 = vec![0u8; GROUP_LEN];
         }
-        let location = (y * 3 * GROUP_DIM) + (x * 3);
+        let location = Self::get_offset(x, y);
         self.2[location] = rgb.0 as u8;
         self.2[location + 1] = rgb.1 as u8;
         self.2[location + 2] = rgb.2 as u8;
@@ -68,7 +72,7 @@ impl TileGroup {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Serialize, Deserialize)]
-pub struct DrawMsg {
+pub struct DrawEvent {
     pub x: i32,
     pub y: i32,
     pub rgb: (i8, i8, i8),
@@ -76,19 +80,23 @@ pub struct DrawMsg {
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum Input {
-    DrawTile(DrawMsg),
+    DrawTile(DrawEvent),
     GetGroup(GroupKey),
-    GetTileInfo((i32, i32)),
 }
 
 #[derive(Debug, PartialEq, Serialize)]
 pub enum TextOutput {
-    DrawEvent(DrawMsg),
-    TileInfo(Tile),
+    DrawEvent(DrawEvent),
     Err(String),
 }
 
 #[derive(Debug, PartialEq, Serialize)]
 pub enum BinaryOutput {
     Group(TileGroup),
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+pub struct RespErr {
+    pub code: u16,
+    pub err: String,
 }
