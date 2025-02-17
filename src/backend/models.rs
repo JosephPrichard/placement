@@ -78,23 +78,6 @@ pub struct DrawEvent {
     pub rgb: (i8, i8, i8),
 }
 
-#[derive(Debug, PartialEq, Deserialize)]
-pub enum Input {
-    DrawTile(DrawEvent),
-    GetGroup(GroupKey),
-}
-
-#[derive(Debug, PartialEq, Serialize)]
-pub enum TextOutput {
-    DrawEvent(DrawEvent),
-    Err(String),
-}
-
-#[derive(Debug, PartialEq, Serialize)]
-pub enum BinaryOutput {
-    Group(TileGroup),
-}
-
 #[derive(Debug, PartialEq, Serialize)]
 pub struct RespErr {
     pub code: u16,

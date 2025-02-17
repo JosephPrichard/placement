@@ -1,5 +1,6 @@
 pub mod query;
 pub mod cache;
 pub mod broadcast;
-pub mod server;
+pub mod handlers;
 pub mod models;
+pub mod service;

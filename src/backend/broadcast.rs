@@ -1,7 +1,7 @@
 use crate::backend::models::{DrawEvent, ServiceError};
 use bb8_redis::bb8::Pool;
 use bb8_redis::redis::AsyncCommands;
-use bb8_redis::RedisConnectionManager;
+use bb8_redis::{redis, RedisConnectionManager};
 use bincode;
 use futures_util::StreamExt;
 use tokio::sync::broadcast;

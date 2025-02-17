@@ -1,8 +1,7 @@
 use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
 use crate::backend::models::DrawEvent;
 use bb8_redis::bb8::Pool;
-use bb8_redis::RedisConnectionManager;
-use std::sync::Arc;
+use bb8_redis::{redis, RedisConnectionManager};
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
