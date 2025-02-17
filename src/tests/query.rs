@@ -1,11 +1,11 @@
+use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
+use crate::backend::query::{create_schema, QueryStore};
+use chrono::{TimeZone, Utc};
+use scylla::SessionBuilder;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 use std::time::SystemTime;
-use chrono::{TimeZone, Utc};
-use scylla::SessionBuilder;
 use tracing::log::info;
-use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
-use crate::backend::query::{create_schema, QueryStore};
 
 async fn init_queries(port: u16) -> QueryStore {
     let session = SessionBuilder::new()

@@ -1,43 +1,50 @@
+use crate::backend::broadcast::create_message_subscriber;
+use crate::backend::ws::{ws_handler, ServerState};
+use axum::routing::get;
+use axum::{Router, ServiceExt};
+use backend::query::QueryStore;
+use bb8_redis::bb8::Pool;
+use bb8_redis::{bb8, RedisConnectionManager};
+use redis::Client;
+use scylla::{Session, SessionBuilder};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use axum::{Router};
-use axum::routing::get;
-use backend::query::QueryStore;
-use scylla::{Session, SessionBuilder};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::log::info;
-use crate::backend::broadcast::create_message_subscriber;
-use crate::backend::server::{ws_handler, Server};
+use crate::backend::database::{Database, External};
 
 mod backend;
 
-#[tokio::main]
-async fn main() {
-    dotenv::dotenv().unwrap();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
-    
-    let scylla_uri = std::env::var("SCYLLA_URI").expect("Missing SCYLLA_URI env variable");
-    let redis_url = std::env::var("REDIS_URL").expect("Missing REDIS_URL env variable");
-
+async fn init_server(scylla_uri: String, redis_url: String) -> ServerState<Database> {
     let session: Session = SessionBuilder::new()
         .known_node(scylla_uri)
         .build()
         .await
         .unwrap();
-    let query = QueryStore::init_queries(session).await.unwrap();
-    let client = redis::Client::open(redis_url).unwrap();
+    let query = Arc::new(QueryStore::init_queries(session).await.unwrap());
+    let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
     let (tx, _) = broadcast::channel(1000);
 
-    let server = Server{ query: Arc::new(query), client: Arc::new(client), tx: Arc::new(tx), };
+    ServerState { broadcast_tx: tx, external: Database{ query, redis } }
+}
 
-    let subscriber_handle = create_message_subscriber(server.client.clone(), server.tx.clone());
+#[tokio::main]
+async fn main() {
+    dotenv::dotenv().unwrap();
+    tracing_subscriber::fmt()
+        .init();
+    
+    let scylla_uri = std::env::var("SCYLLA_URI").expect("Missing SCYLLA_URI env variable");
+    let redis_url = std::env::var("REDIS_URL").expect("Missing REDIS_URL env variable");
+
+    let server = init_server(scylla_uri, redis_url.clone()).await;
+
+    let client = Client::open(redis_url).unwrap();
+    let subscriber_handle = create_message_subscriber(client, server.broadcast_tx.clone());
 
     let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
-
     let router = Router::new()
         .route("/canvas", get(ws_handler))
         .with_state(server)
@@ -47,7 +54,7 @@ async fn main() {
     info!("Server running at {}", addr);
 
     let listener = TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, router).await.unwrap();
+    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 
     info!("Stopped the backend. Shutting down the subscriber task.");
     subscriber_handle.abort();

@@ -1,12 +1,13 @@
+use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
+use crate::backend::models::DrawMsg;
+use bb8_redis::bb8::Pool;
+use bb8_redis::RedisConnectionManager;
 use std::sync::Arc;
 use std::time::Duration;
-use redis::Client;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tracing::log::info;
-use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
-use crate::backend::models::DrawMsg;
 
 static DRAW_MSGS: [DrawMsg; 4] = [
     // these are in sorted order in respect to the derived order of the 'Ord' trait
@@ -17,11 +18,10 @@ static DRAW_MSGS: [DrawMsg; 4] = [
     DrawMsg{ x: 1, y: 1, rgb: (3, 3, 3) }
 ];
 
-async fn test_broadcast_messaging(client: Arc<Client>) {
+async fn test_broadcast_messaging(client: redis::Client, pool: Pool<RedisConnectionManager>) {
     let (tx, _) = broadcast::channel(16);
-    let tx = Arc::new(tx);
 
-    let subscriber_handle = create_message_subscriber(client.clone(), tx.clone());
+    let subscriber_handle = create_message_subscriber(client, tx.clone());
 
     let mut recv_handles = vec![];
     for i in 0..3 {
@@ -42,10 +42,9 @@ async fn test_broadcast_messaging(client: Arc<Client>) {
         });
         recv_handles.push(handle)
     }
-
-    let conn = &mut client.get_connection().unwrap();
+    
     for draw_msg in DRAW_MSGS {
-        broadcast_message(conn, draw_msg).unwrap();
+        broadcast_message(&pool, draw_msg).await.unwrap();
     }
 
     let mut recv_handle = tokio::spawn(async move {
@@ -74,8 +73,11 @@ async fn test_broadcast_messaging(client: Arc<Client>) {
 
 pub async fn test_broadcast() {
     let port = 6380;
-    let client = Arc::new(Client::open(format!("redis://127.0.0.1:{}/", port)).unwrap());
-    test_broadcast_messaging(client).await;
+    let redis_url = format!("redis://127.0.0.1:{}/", port);
+    let client = redis::Client::open(redis_url.as_str()).unwrap();
+    let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
+    
+    test_broadcast_messaging(client, redis).await;
 
     let metrics = Handle::current().metrics();
     let n = metrics.num_alive_tasks();

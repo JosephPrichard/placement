@@ -1,9 +1,9 @@
 use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup};
 use chrono::{DateTime, TimeZone, Utc};
 use futures_util::StreamExt;
+use scylla::frame::value::Counter;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
-use scylla::frame::value::Counter;
 use tracing::log::info;
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {

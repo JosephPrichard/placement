@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::net::IpAddr;
-use serde::{Deserialize, Serialize};
 
 pub const GROUP_DIM: usize = 100;
 pub const GROUP_DIM_I32: i32 = GROUP_DIM as i32;
@@ -13,8 +13,8 @@ pub enum ServiceError {
 }
 
 impl ServiceError {
-    pub fn handle_fatal(e: impl Debug, m: &str) -> ServiceError {
-        let m = format!("Fatal error has occurred {}: {:?}", m, e);
+    pub fn handle_fatal(err: impl Debug, msg: &str) -> ServiceError {
+        let m = format!("Fatal error has occurred {}: {:?}", msg, err);
         ServiceError::FatalError(m)
     }
 }
