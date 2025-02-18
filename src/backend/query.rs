@@ -112,25 +112,25 @@ impl QueryStore {
     pub async fn init_queries(session: Session) -> Result<QueryStore, ServiceError> {
         let insert_placement = insert_placement(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating insert_placement query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating insert_placement query"))?;
         let increment_times_stat = increment_times_stat(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating increment_times_stat query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating increment_times_stat query"))?;
         let get_one_tile = get_one_tile(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating get_one_tile query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating get_one_tile query"))?;
         let get_tile_group = get_tile_group(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating get_tile_group query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating get_tile_group query"))?;
         let get_placements = get_placements(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating get_placements query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating get_placements query"))?;
         let update_tile = update_tile(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating update_tile query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating update_tile query"))?;
         let get_stats = get_times_placed(&session)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while creating get_times_placed query"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while creating get_times_placed query"))?;
         
         Ok(QueryStore { insert_placement, increment_times_stat, get_one_tile, get_tile_group, get_placements, update_tile, get_stats, session })
     }
@@ -139,14 +139,19 @@ impl QueryStore {
         let mut rows_stream = self.session
             .execute_iter(self.get_tile_group.clone(), (key.0, key.1))
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when selecting tile group"))?
+            .map_err(|e| ServiceError::map_fatal(e, "when selecting tile group"))?
             .rows_stream::<(i32, i32, (i8, i8, i8))>()
-            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select tile group result"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select tile group result"))?;
         
-        let mut group = TileGroup::empty(key.0, key.1);
+        let mut group = TileGroup::empty();
         while let Some(row) = rows_stream.next().await {
-            let (x, y, rgb) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile rows"))?;
-            group.set((x - key.0) as usize, (y - key.1) as usize, rgb);
+            let (x, y, rgb) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming tile rows"))?;
+
+            let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
+
+            let x_offset = (x - key.0).abs() as usize;
+            let y_offset = (y - key.1).abs() as usize;
+            group.set(x_offset, y_offset, rgb);
         }
 
         info!("Selected tile group with x={}, y={}", key.0, key.1);
@@ -159,19 +164,19 @@ impl QueryStore {
         let mut rows_stream = self.session
             .execute_iter(self.get_one_tile.clone(), (grp_key.0, grp_key.1, x, y))
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when selecting one tile"))?
+            .map_err(|e| ServiceError::map_fatal(e, "when selecting one tile"))?
             .rows_stream::<(i32, i32, (i8, i8, i8), CqlTimestamp)>()
-            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select tile result"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select tile result"))?;
 
         match rows_stream.next().await {
             Some(row) => {
-                let (x, y, rgb, last_updated_time) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming tile rows"))?;
+                let (x, y, rgb, last_updated_time) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming tile rows"))?;
                 let date: String = format!("{}", Utc.timestamp_millis_opt(last_updated_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
                 let tile = Tile { x, y, rgb, date };
                 info!("Selected one tile={:?}", tile);
                 Ok(tile)
             },
-            None => Err(ServiceError::NotFoundError(format!("tile not found at given location: {:?}", (x, y))))
+            None => Err(ServiceError::NotFound(format!("tile not found at given location: {:?}", (x, y))))
         }
     }
 
@@ -184,14 +189,14 @@ impl QueryStore {
         let mut rows_stream = self.session
             .execute_iter(self.get_placements.clone(), (hour, CqlTimestamp(after_millis)))
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when selecting placements"))?
+            .map_err(|e| ServiceError::map_fatal(e, "when selecting placements"))?
             .rows_stream::<(i32, i32, (i8, i8, i8), IpAddr, CqlTimestamp)>()
-            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select placement"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select placement"))?;
 
         let mut placements = vec![];
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb, ipaddress, placement_time) = 
-                row.map_err(|e| ServiceError::handle_fatal(e, "while streaming placement rows"))?;
+                row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
             
             let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
             placements.push(Placement { x, y, rgb, ipaddress, placement_date })
@@ -203,13 +208,13 @@ impl QueryStore {
         let mut rows_stream = self.session
             .execute_iter(self.get_stats.clone(),  (ipaddress, ))
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when selecting stats"))?
+            .map_err(|e| ServiceError::map_fatal(e, "when selecting stats"))?
             .rows_stream::<(Counter, )>()
-            .map_err(|e| ServiceError::handle_fatal(e, "while extracting rows stream from select stats result"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select stats result"))?;
 
         match rows_stream.next().await {
             Some(row) => {
-                let (times_placed, ) = row.map_err(|e| ServiceError::handle_fatal(e, "while streaming stats rows"))?;
+                let (times_placed, ) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming stats rows"))?;
                 info!("Selected times_placed={} for ip={}", times_placed.0, ipaddress);
                 Ok(times_placed.0)
             },
@@ -217,10 +222,12 @@ impl QueryStore {
         }
     }
 
-    pub async fn update_tile(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
+    pub async fn update_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
         let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
+        
+        let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
         
         let values = (grp_key.0, grp_key.1, x, y, rgb, placer_ipaddress, placement_time);
         info!("Updating tile record=(grp_key={:?}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})", 
@@ -228,18 +235,18 @@ impl QueryStore {
 
         self.session.execute_unpaged(&self.update_tile, values)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when updating tile"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "when updating tile"))?;
         Ok(())
     }
 
-    pub async fn update_tile_now(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
+    pub async fn update_tile_now(&self, x: i32, y: i32, rgb: (u8, u8, u8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
         self.update_tile(x, y, rgb, placer_ipaddress, SystemTime::now()).await
     }
 
     pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
         self.session.execute_unpaged(&self.increment_times_stat, (ipaddress, ))
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when incrementing times placed stat"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "when incrementing times placed stat"))?;
         Ok(())
     }
 
@@ -254,7 +261,7 @@ impl QueryStore {
         
         self.session.execute_unpaged(&self.insert_placement, values)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "when inserting placement"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "when inserting placement"))?;
         Ok(())
     }
     

@@ -1,7 +1,6 @@
 use std::convert::Infallible;
 use crate::backend::models::{DrawEvent, GroupKey, ServiceError};
-use axum::extract::ws::Message;
-use axum::extract::{ConnectInfo, Query, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::response::{IntoResponse, Sse};
 use futures_util::{SinkExt, Stream, StreamExt};
 use std::net::{IpAddr, SocketAddr};
@@ -54,7 +53,7 @@ pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<It
             yield Ok(Event::default().data(str))
         }
     };
-    
+
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(1))
@@ -80,7 +79,7 @@ pub async fn handle_get_tile(Query(query): Query<PointQuery>, State(server): Sta
                 (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
             }
         },
-        Err(ServiceError::NotFoundError(str)) => (StatusCode::NOT_FOUND, [(CONTENT_TYPE, "text/plain")], str),
+        Err(ServiceError::NotFound(str)) => (StatusCode::NOT_FOUND, [(CONTENT_TYPE, "text/plain")], str),
         Err(err) => {
             error!("Error occurred during get one tile operation: {:?}", err);
             (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())

@@ -1,9 +1,8 @@
-use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM};
+use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM, GROUP_DIM_I32};
 use crate::backend::query::{create_schema, QueryStore};
 use chrono::{TimeZone, Utc};
 use scylla::SessionBuilder;
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::Duration;
 use std::time::SystemTime;
 use tracing::log::info;
 
@@ -32,7 +31,7 @@ async fn test_get_then_update_tile(query: &QueryStore) {
     query.update_tile(5, 4, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), time).await.unwrap();
     let tile2 = query.get_one_tile(5, 4).await;
 
-    assert_eq!(tile1, Err(ServiceError::NotFoundError(String::from("tile not found at given location: (1, 1)"))));
+    assert_eq!(tile1, Err(ServiceError::NotFound(String::from("tile not found at given location: (1, 1)"))));
     assert_eq!(tile2, Ok(Tile { x: 5, y: 4, rgb: (2, 2, 2), date: "2025/01/01 00:00:00".to_string() }));
 }
 
@@ -41,10 +40,10 @@ async fn test_get_tile_group(query: &QueryStore) {
 
     query.update_tile_now(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
     query.update_tile_now(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
-    query.update_tile_now((GROUP_DIM + 1) as i32, (GROUP_DIM + 1) as i32, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
+    query.update_tile_now(GROUP_DIM_I32 + 1, GROUP_DIM_I32 + 1, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).await.unwrap();
     let tiles = query.get_tile_group(GroupKey(0, 0)).await.unwrap();
 
-    let mut expected = TileGroup::empty(0, 0);
+    let mut expected = TileGroup::empty();
     expected.set(0, 0, (1, 1, 1));
     expected.set(2, 0, (5, 5, 5));
 

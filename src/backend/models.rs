@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::net::IpAddr;
+use tracing::log::error;
 
 pub const GROUP_DIM: usize = 100;
 pub const GROUP_DIM_I32: i32 = GROUP_DIM as i32;
@@ -8,14 +9,14 @@ pub const GROUP_LEN: usize = GROUP_DIM * GROUP_DIM * 3;
 
 #[derive(Debug, PartialEq)]
 pub enum ServiceError {
-    FatalError(String),
-    NotFoundError(String),
+    NotFound(String), // indicates a resource couldn't be found, and the only way to handle that is to tell the client
+    Fatal, // indicates something failed that wasn't supposed to fail
 }
 
 impl ServiceError {
-    pub fn handle_fatal(err: impl Debug, msg: &str) -> ServiceError {
-        let m = format!("Fatal error has occurred {}: {:?}", msg, err);
-        ServiceError::FatalError(m)
+    pub fn map_fatal(target: impl Debug, msg: &str) -> ServiceError {
+        error!("Fatal error has occurred {}: {:?}", msg, target);
+        ServiceError::Fatal
     }
 }
 
@@ -49,25 +50,25 @@ pub struct Tile {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct TileGroup(pub i32, pub i32, pub Vec<u8>);
+pub struct TileGroup(pub Vec<u8>);
 
 impl TileGroup {
-    pub fn empty(x: i32, y: i32) -> TileGroup {
-        TileGroup(x, y, vec![])
+    pub fn empty() -> TileGroup {
+        TileGroup(vec![])
     }
     
     pub fn get_offset(x: usize, y: usize) -> usize {
         (y * 3 * GROUP_DIM) + (x * 3)
     }
 
-    pub fn set(&mut self, x: usize, y: usize, rgb: (i8, i8, i8)) {
-        if self.2.is_empty() {
-            self.2 = vec![0u8; GROUP_LEN];
+    pub fn set(&mut self, x: usize, y: usize, rgb: (u8, u8, u8)) {
+        if self.0.is_empty() {
+            self.0 = vec![0u8; GROUP_LEN];
         }
         let location = Self::get_offset(x, y);
-        self.2[location] = rgb.0 as u8;
-        self.2[location + 1] = rgb.1 as u8;
-        self.2[location + 2] = rgb.2 as u8;
+        self.0[location] = rgb.0;
+        self.0[location + 1] = rgb.1;
+        self.0[location + 2] = rgb.2;
     }
 }
 
@@ -75,11 +76,5 @@ impl TileGroup {
 pub struct DrawEvent {
     pub x: i32,
     pub y: i32,
-    pub rgb: (i8, i8, i8),
-}
-
-#[derive(Debug, PartialEq, Serialize)]
-pub struct RespErr {
-    pub code: u16,
-    pub err: String,
+    pub rgb: (u8, u8, u8),
 }

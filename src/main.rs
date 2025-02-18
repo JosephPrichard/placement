@@ -45,7 +45,7 @@ async fn main() {
 
     let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
     let router = Router::new()
-        .route("/canvas-sse", get(handle_sse))
+        .route("/canvas/sse", get(handle_sse))
         .route("/tile", get(handle_get_tile))
         .route("/tile", post(handle_post_tile))
         .route("/group", get(handle_get_group))

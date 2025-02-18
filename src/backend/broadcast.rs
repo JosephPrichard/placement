@@ -14,30 +14,34 @@ pub fn create_message_subscriber(redis: redis::Client, tx: broadcast::Sender<Dra
     tokio::spawn(async move {
         let mut pubsub = redis.get_async_pubsub()
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, "while getting connection in message subscriber"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while getting connection in message subscriber"))?;
 
         pubsub.subscribe(CHANNEL_BUS_NM)
             .await
-            .map_err(|e| ServiceError::handle_fatal(e, &format!("when subscribing from channel {}", CHANNEL_BUS_NM)))?;
+            .map_err(|e| ServiceError::map_fatal(e, &format!("when subscribing from channel {}", CHANNEL_BUS_NM)))?;
         
         info!("Began listening to pubsub subscribing to channel={}", CHANNEL_BUS_NM);
         while let Some(msg) = pubsub.on_message().next().await {
-            let payload: Vec<u8> = msg.get_payload()
-                .map_err(|e| ServiceError::handle_fatal(e, "while extracting binary payload from pubsub message"))?;
+            match msg.get_payload::<Vec<u8>>() {
+                Err(err) => error!("Failed to get payload into bytes from message: {:?}", err),
+                Ok(payload) => {
+                    info!("Received a payload of size={} on channel={}", payload.len(), msg.get_channel_name());
 
-            info!("Received a payload of size={} on channel={}", payload.len(), msg.get_channel_name());
-            
-            match msg.get_channel_name() {
-                CHANNEL_BUS_NM => match bincode::deserialize::<DrawEvent>(&payload) {
-                    Err(error) => error!("Failed to deserialize a message for channel={} with error={:?}", CHANNEL_BUS_NM, error),
-                    Ok(draw_msg) => {
-                        info!("Received a draw_msg={:?} on channel={}", draw_msg, msg.get_channel_name());
-                        tx.send(draw_msg)
-                            .map_err(|e| ServiceError::handle_fatal(e, "while sending draw_msg to broadcast channel"))?;
-                    },
-                },
-                name => warn!("Unknown channel={} for message", name)
-            };
+                    match msg.get_channel_name() {
+                        CHANNEL_BUS_NM => match bincode::deserialize::<DrawEvent>(&payload) {
+                            Err(error) =>
+                                error!("Failed to deserialize a message for channel={} with error={:?}", CHANNEL_BUS_NM, error),
+                            Ok(draw_msg) => {
+                                info!("Received a draw_msg={:?} on channel={}", draw_msg, msg.get_channel_name());
+                                if let Err(err) = tx.send(draw_msg) {
+                                    error!("Failed to send draw event to broadcast channel with error={:?}", err);
+                                }
+                            },
+                        },
+                        name => warn!("Unknown channel={} for message", name)
+                    };
+                }
+            }
         }
         Ok::<(), ServiceError>(())
     })
@@ -47,11 +51,11 @@ pub async fn broadcast_message(redis: &Pool<RedisConnectionManager>, msg: DrawEv
     let mut conn = redis.get().await.unwrap();
     
     let bytes = bincode::serialize(&msg)
-        .map_err(|e| ServiceError::handle_fatal(e, "when serializing draw_msg"))?;
+        .map_err(|e| ServiceError::map_fatal(e, "when serializing draw_msg"))?;
     
     conn.publish::<_, _, ()>(CHANNEL_BUS_NM, bytes)
         .await
-        .map_err(|e| ServiceError::handle_fatal(e, &format!("when publishing to channel {}", CHANNEL_BUS_NM)))?;
+        .map_err(|e| ServiceError::map_fatal(e, &format!("when publishing to channel {}", CHANNEL_BUS_NM)))?;
     
     info!("Broadcast a draw message {:?} onto channel {}", msg, CHANNEL_BUS_NM);
     Ok(())
