@@ -6,19 +6,13 @@
  * @property {number} centerY
  */
 
-/**
- * @typedef {object} ConnState
- * @property {WebSocket} socket
- * @property {number} connectTries
- */
-
 const GROUP_DIM = 100;
 
 /**
  * @param group {Uint8Array}
  * @param canvas {CanvasState}
  */
-function drawGroupToCanvas(group, canvas) {
+function drawGroupToCanvas(canvas, group) {
     for (let x  = 0; x < GROUP_DIM; x++) {
         for (let y  = 0; y < GROUP_DIM; y++) {
             const offset = (y * 3 * GROUP_DIM) + (x * 3)
@@ -37,108 +31,123 @@ function drawGroupToCanvas(group, canvas) {
 
 /**
  * @param canvas {CanvasState}
- * @param socket {ConnState}
  * @param x {number}
  * @param y {number}
  */
-function drawGroup(canvas, socket, x, y) {
+function drawGroup(canvas, x, y) {
     const key = `${x},${y}`;
     const group = canvas.groupMap.get(key);
     if (group === undefined) {
-        // group doesn't exist? let's signal the backend to get it for us
         canvas.groupMap.set(key, 0);
-        sendGetGroupMsg(socket, x, y);
+        getGroup(x, y)
+            .then((resp) => {
+                if (resp instanceof Uint8Array) {
+                    canvas.groupMap.set(key, resp);
+                    drawGroupToCanvas(canvas, resp);
+                } else {
+
+                }
+            })
     } else if (group instanceof Uint8Array) {
-        // we have the group? attempt to draw it on the canvas
-        drawGroupToCanvas(group, canvas);
-    }
-    // otherwise we've already requested a group and the backend has not responded yet, just do nothing
-}
-
-/**
- * @param conn {ConnState}
- * @param e {MessageEvent<any>}
- */
-function handleMessage(conn, e) {
-    if (e.data instanceof ArrayBuffer) {
-        const buffer = e.data;
-        const array32 = new Uint32Array(buffer);
-
-        const type = array32[0];
-        if (type === 0) {
-            const x = array32[1];
-            const y = array32[2];
-            const group = new Uint8Array(buffer).subarray(12);
-        } else {
-            throw new Error("Unknown binary data type " + type);
-        }
-    } else if (e.data instanceof String) {
-        const data = JSON.parse(e.data);
-        const drawEvent = data["DrawEvent"];
-        const err = data["Err"];
-
-        if (drawEvent) {
-
-        } else if (err) {
-
-        } else {
-            throw new Error("Text data should contain TileInfo or DrawEvent field");
-        }
+        drawGroupToCanvas(canvas, group);
     } else {
-        throw new Error("Message data should be a String (text) or an ArrayBuffer (binary)");
+        console.debug("Attempted to draw group currently in the fetch state");
+    }
+}
+
+function listenCanvas() {
+    const source = new EventSource("/canvas/sse");
+
+    source.onmessage = function (event) {
+        if (event.data !== "keep-alive") {
+            const draw = JSON.parse(event.data);
+        }
+    };
+
+    source.onerror = function() {
+        console.error("Canvas server side event was closed.");
+        source.close();
+    };
+}
+
+const URL = "http://localhost:3000";
+
+/**
+ * @typedef {object} Tile
+ * @property {number} x
+ * @property {number} y
+ * @property {number[]} rgb
+ * @property {string} date
+ */
+
+/**
+ * @param x {number}
+ * @param y {number}
+ * @return {Promise<Tile | string>}
+ */
+async function getTile(x, y) {
+    try {
+        const resp = await fetch(`${URL}/tile?x=${x}&y=${y}`, { method: "GET" })
+        if (resp.ok) {
+            return await resp.json();
+        } else {
+            const text = await resp.text();
+            console.error(text);
+            return text;
+        }
+    } catch (err) {
+        console.error(err);
+        return "Unexpected error has occurred";
     }
 }
 
 /**
- * @param conn {ConnState}
+ * @typedef {object} DrawEvent
+ * @property {number} x
+ * @property {number} y
+ * @property {number[]} rgb
  */
-function tryConnect(conn) {
-    setTimeout(function() {
-        conn.socket = new WebSocket("ws://localhost/canvas");
-        conn.socket.addEventListener("open", function(e) {
-            conn.connectTries = 0;
-        });
-        conn.socket.addEventListener("message", function(e) {
-            handleMessage(conn, e);
-        });
-        conn.socket.addEventListener("error", function(e) {
-            conn.connectTries += 1;
-            tryConnect(conn);
-        });
-        conn.socket.addEventListener("close", function(e) {
-            conn.connectTries += 1;
-            tryConnect(conn);
-        });
-    }, conn.connectTries * 2);
+
+/**
+ * @param draw {DrawEvent}
+ * @return {Promise<string | 0>}
+ */
+async function postTile(draw) {
+    try {
+        const resp = await fetch(`${URL}/tile`, { method: "POST", body: JSON.stringify(draw) })
+        if (resp.ok) {
+            const text = await resp.text();
+            console.log(text);
+            return 0;
+        } else {
+            const text = await resp.text();
+            console.error(text);
+            return text;
+        }
+    } catch (err) {
+        console.error(err);
+        return "Unexpected error has occurred";
+    }
 }
 
 /**
- * @param conn {ConnState}
  * @param x {number}
  * @param y {number}
+ * @return {Promise<Uint8Array | string>}
  */
-function sendGetGroupMsg(conn, x, y) {
-    const msg = JSON.stringify({ "GetGroup": [x, y] });
-    conn.socket.send(msg);
-}
-
-/**
- * @param conn {ConnState}
- * @param x {number}
- * @param y {number}
- */
-function sendGetTileInfoMsg(conn, x, y) {
-    const msg = JSON.stringify({ "GetTileInfo": [x, y] });
-    conn.socket.send(msg);
-}
-
-/**
- * @param conn {ConnState}
- * @param x {number}
- * @param y {number}
- * @param rgb {number[]}
- */
-function sendDrawTileMsg(conn, x, y, rgb) {
-    const msg = JSON.stringify({ "DrawTile": { x, y, rgb } });
-    conn.socket.send(msg);
+async function getGroup(x, y) {
+    try {
+        const resp = await fetch(`${URL}/group?x=${x}&y=${y}`, { method: "GET" })
+        if (resp.ok) {
+            const buffer = await resp.arrayBuffer();
+            return new Uint8Array(buffer);
+        } else {
+            const text = await resp.text();
+            console.error(text);
+            return text;
+        }
+    } catch (err) {
+        console.error(err);
+        return "Unexpected error has occurred";
+    }
 }
