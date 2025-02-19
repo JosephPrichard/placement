@@ -10,9 +10,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::Receiver;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::log::info;
 use crate::backend::handlers::ServerState;
+use crate::backend::models::DrawEvent;
 
 mod backend;
 
@@ -24,7 +26,7 @@ async fn init_server(scylla_uri: String, redis_url: String) -> ServerState {
         .unwrap();
     let query = Arc::new(QueryStore::init_queries(session).await.unwrap());
     let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
-    let (tx, _) = broadcast::channel(1000);
+    let (tx, rx) = broadcast::channel(1000);
 
     ServerState { broadcast_tx: tx, query, redis }
 }

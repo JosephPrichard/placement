@@ -1,8 +1,12 @@
-use bb8_redis::bb8::PooledConnection;
+use bb8_redis::bb8::{Pool, PooledConnection};
 use crate::backend::models::{DrawEvent, GroupKey, ServiceError, TileGroup, GROUP_LEN};
 use bb8_redis::redis::AsyncCommands;
 use bb8_redis::RedisConnectionManager;
 use tracing::log::{error, info};
+
+pub async fn acquire_conn<'a>(redis: &'a Pool<RedisConnectionManager>) -> Result<PooledConnection<'a, RedisConnectionManager>, ServiceError> {
+   redis.get().await.map_err(|e| ServiceError::map_fatal(e, "while getting a redis connection"))
+}
 
 pub async fn set_cached_group<'a>(conn: &mut PooledConnection<'a, RedisConnectionManager>, key: GroupKey, group: &TileGroup) -> Result<(), ServiceError> {
     let key_str = format!("({},{})", key.0, key.1);
@@ -57,17 +61,15 @@ pub async fn update_cached_group<'a>(conn: &mut PooledConnection<'a, RedisConnec
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while performing setrange operation on group"))?;
 
-        info!("Updated tile group using setrange with key={:?}", key);
+        info!("Updated tile group using setrange with key={:?} in the cache", key);
     } else {
         // if it does not exist, create a new tile group, write the value into it, then write it into the cache
         let mut group = TileGroup::empty();
         group.set(x_offset, y_offset, draw.rgb);
         
         set_cached_group(conn, key, &group).await?;
-        info!("Updated using set tile group with key={:?}", key);
+        info!("Updated using set tile group with key={:?} in the cache", key);
     }
-
-    info!("Updated tile group with key={:?} in the cache", key);
 
     Ok(())
 }

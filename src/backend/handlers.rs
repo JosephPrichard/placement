@@ -1,12 +1,13 @@
 use std::convert::Infallible;
+use std::future::Future;
 use crate::backend::models::{DrawEvent, GroupKey, ServiceError};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::response::{IntoResponse, Sse};
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::Stream;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use axum::http::{HeaderMap, StatusCode};
 use axum::http::header::CONTENT_TYPE;
 use axum::Json;
@@ -16,9 +17,11 @@ use bb8_redis::RedisConnectionManager;
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast};
+use tracing::{info_span, Instrument};
 use tracing::log::{error, info, warn};
+use crate::backend::broadcast::broadcast_message;
+use crate::backend::cache::{acquire_conn, get_cached_group, set_cached_group, update_cached_group};
 use crate::backend::query::QueryStore;
-use crate::backend::service::{draw_tile, get_group};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -69,7 +72,7 @@ pub struct PointQuery {
 pub async fn handle_get_tile(Query(query): Query<PointQuery>, State(server): State<ServerState>) -> impl IntoResponse {
     info!("Handling GET tile info request query={:?}", query);
     
-    let result = server.query.get_one_tile(query.x, query.y).await;
+    let result = server.query.get_one_tile(query.x, query.y).instrument(info_span!("Get tile")).await;
     match result {
         Ok(tile) => match serde_json::to_string(&tile) {
             Ok(json) =>
@@ -87,39 +90,77 @@ pub async fn handle_get_tile(Query(query): Query<PointQuery>, State(server): Sta
     }
 }
 
-pub async fn handle_post_tile(State(server): State<ServerState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<DrawEvent>) -> impl IntoResponse {
-    info!("Handling POST tile request body={:?}", body);
+async fn draw_tile(server: &ServerState, draw: DrawEvent, ip: IpAddr) -> Result<(), ServiceError> {
+    server.query.batch_update_tile(draw.x, draw.y, draw.rgb, ip, SystemTime::now()).instrument(info_span!("Batch update tile")).await?;
+    server.query.increment_times_placed(ip).await?;
 
-    let resp_headers = [(CONTENT_TYPE, "text/plain")];
+    // run these in a background task, we don't need to report to client if this fails.
+    let server = server.clone();
+    tokio::spawn(async move {
+        if let Err(err) = async move {
+            let conn = &mut acquire_conn(&server.redis).await?;
+            update_cached_group(conn, draw).instrument(info_span!("Update cached group")).await?;
+            broadcast_message(&server.redis, draw).await?;
+            Ok::<(), ServiceError>(())
+        }.await {
+            error!("Failed in draw tile background task: {:?}", err);
+        };
+    });
+    Ok(())
+}
 
-    let ip = match headers.get("X-Forwarded-For") {
-        None => addr.ip(),
+fn get_ip_address(headers: HeaderMap, addr: SocketAddr) -> Result<IpAddr, &'static str> {
+    match headers.get("X-Forwarded-For") {
+        None => Ok(addr.ip()),
         Some(header) => {
-            let ip_str = match header.to_str() {
-                Ok(ip_str) => ip_str,
+            match header.to_str() {
+                Ok(ip_str) => match IpAddr::from_str(ip_str) {
+                    Ok(ip) => Ok(ip),
+                    Err(err) => {
+                        error!("Failed to convert a header to a string: {}", err);
+                        Err("Failed to parse ip address in X-Forwarded-For header")
+                    }
+                },
                 Err(err) => {
                     error!("Failed to convert a header to a string: {}", err);
-                    return (StatusCode::BAD_REQUEST, resp_headers, "Failed to convert X-Forwarded-For header to string")
-                }
-            };
-            match IpAddr::from_str(ip_str) {
-                Ok(ip) => ip,
-                Err(err) => {
-                    error!("Failed to convert a header to a string: {}", err);
-                    return (StatusCode::BAD_REQUEST, resp_headers, "Failed to parse ip address in X-Forwarded-For header")
+                    Err("Failed to convert X-Forwarded-For header to string")
                 }
             }
         }
+    }
+}
+
+pub async fn handle_post_tile(State(server): State<ServerState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<DrawEvent>) -> impl IntoResponse {
+    info!("Handling POST tile request body={:?}", body);
+
+    let ip = match get_ip_address(headers, addr) {
+        Ok(ip) => ip,
+        Err(str) => return (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], str)
     };
     
-    let result = draw_tile(&server, body, ip).await;
+    let result = draw_tile(&server, body, ip).instrument(info_span!("Draw tile")).await;
     match result {
-        Ok(()) => (StatusCode::OK, resp_headers, "Successfully drew the tile"),
+        Ok(()) => (StatusCode::OK, [(CONTENT_TYPE, "text/plain")], "Successfully drew the tile"),
         Err(err) => {
             error!("Failed to draw the tile, event={:?} err={:?}", body, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, resp_headers, "An unexpected error has occurred")
+            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred")
         }
     }
+}
+
+async fn get_group(server: &ServerState, key: GroupKey) -> Result<Vec<u8>, ServiceError> {
+    let conn = &mut acquire_conn(&server.redis).await?;
+
+    let group_opt = get_cached_group(conn, key).await?;
+    let group = match group_opt {
+        None => server.query.get_tile_group(key).await?,
+        Some(group) => group
+    };
+
+    set_cached_group(conn, key, &group).await?;
+
+    let buffer = group.0;
+    Ok(buffer)
 }
 
 pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): State<ServerState>) -> impl IntoResponse {
@@ -127,7 +168,7 @@ pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): St
     
     let key = GroupKey(query.x, query.y);
     
-    let result = get_group(&server, key).await;
+    let result = get_group(&server, key).instrument(info_span!("Get group")).await;
     match result {
         Ok(buffer) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], buffer),
         Err(err) => {

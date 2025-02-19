@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use scylla::frame::value::Counter;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
+use scylla::batch::Batch;
 use tracing::log::info;
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
@@ -43,18 +44,18 @@ async fn increment_times_stat(session: &Session) -> Result<PreparedStatement, Qu
     Ok(prepared)
 }
 
-async fn insert_placement(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = "INSERT INTO pks.placements (hour, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
-}
-
-async fn update_tile(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
+async fn batch_update_tile(session: &Session) -> Result<Batch, QueryError> {
+    let update_tile_query = r#"
         INSERT INTO pks.tiles (group_x, group_y, x, y, rgb, last_updated_ipaddress, last_updated_time)
         VALUES (?, ?, ?, ?, ?, ?, ?);"#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
+    let insert_placement_query = "INSERT INTO pks.placements (hour, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
+
+    let mut batch: Batch = Default::default();
+    batch.append_statement(update_tile_query);
+    batch.append_statement(insert_placement_query);
+
+    let batch: Batch = session.prepare_batch(&batch).await?;
+    Ok(batch)
 }
 
 async fn get_one_tile(session: &Session) -> Result<PreparedStatement, QueryError> {
@@ -99,23 +100,16 @@ async fn get_times_placed(session: &Session) -> Result<PreparedStatement, QueryE
 
 pub struct QueryStore {
     pub session: Session,
-    insert_placement: PreparedStatement,
-    increment_times_stat: PreparedStatement,
-    get_one_tile: PreparedStatement,
-    get_tile_group: PreparedStatement,
-    get_placements: PreparedStatement,
-    update_tile: PreparedStatement,
-    get_stats: PreparedStatement,
+    pub get_one_tile: PreparedStatement,
+    pub get_tile_group: PreparedStatement,
+    pub get_placements: PreparedStatement,
+    pub get_stats: PreparedStatement,
+    pub increment_times_placed: PreparedStatement,
+    pub batch_update_tile: Batch,
 }
 
 impl QueryStore {
     pub async fn init_queries(session: Session) -> Result<QueryStore, ServiceError> {
-        let insert_placement = insert_placement(&session)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "while creating insert_placement query"))?;
-        let increment_times_stat = increment_times_stat(&session)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "while creating increment_times_stat query"))?;
         let get_one_tile = get_one_tile(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_one_tile query"))?;
@@ -125,14 +119,18 @@ impl QueryStore {
         let get_placements = get_placements(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_placements query"))?;
-        let update_tile = update_tile(&session)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "while creating update_tile query"))?;
         let get_stats = get_times_placed(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_times_placed query"))?;
+        let increment_times_placed = increment_times_stat(&session)
+            .await
+            .map_err(|e| ServiceError::map_fatal(e, "while creating increment_times_stat query"))?;
+        let mut batch_update_tile = batch_update_tile(&session)
+            .await
+            .map_err(|e| ServiceError::map_fatal(e, "while creating batched update_tile query"))?;
+        batch_update_tile.set_is_idempotent(true);
         
-        Ok(QueryStore { insert_placement, increment_times_stat, get_one_tile, get_tile_group, get_placements, update_tile, get_stats, session })
+        Ok(QueryStore { get_one_tile, get_tile_group, get_placements, get_stats, increment_times_placed, batch_update_tile, session })
     }
 
     pub async fn get_tile_group(&self, key: GroupKey) -> Result<TileGroup, ServiceError> {
@@ -171,8 +169,11 @@ impl QueryStore {
         match rows_stream.next().await {
             Some(row) => {
                 let (x, y, rgb, last_updated_time) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming tile rows"))?;
-                let date: String = format!("{}", Utc.timestamp_millis_opt(last_updated_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
+                
+                let date: String = format!("{}", Utc.timestamp_millis_opt(last_updated_time.0).unwrap().to_rfc3339());
+                let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
                 let tile = Tile { x, y, rgb, date };
+                
                 info!("Selected one tile={:?}", tile);
                 Ok(tile)
             },
@@ -198,7 +199,8 @@ impl QueryStore {
             let (x, y, rgb, ipaddress, placement_time) = 
                 row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
             
-            let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().format("%Y/%m/%d %H:%M:%S"));
+            let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().to_rfc3339());
+            let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
             placements.push(Placement { x, y, rgb, ipaddress, placement_date })
         }
         Ok(placements)
@@ -222,50 +224,35 @@ impl QueryStore {
         }
     }
 
-    pub async fn update_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
+    pub async fn batch_update_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
-        let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        let placement_time = CqlTimestamp(time_now.as_millis() as i64);
-        
-        let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
-        
-        let values = (grp_key.0, grp_key.1, x, y, rgb, placer_ipaddress, placement_time);
-        info!("Updating tile record=(grp_key={:?}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})", 
-            grp_key, x, y, rgb, placer_ipaddress, placement_time);
 
-        self.session.execute_unpaged(&self.update_tile, values)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "when updating tile"))?;
-        Ok(())
-    }
-
-    pub async fn update_tile_now(&self, x: i32, y: i32, rgb: (u8, u8, u8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
-        self.update_tile(x, y, rgb, placer_ipaddress, SystemTime::now()).await
-    }
-
-    pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
-        self.session.execute_unpaged(&self.increment_times_stat, (ipaddress, ))
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "when incrementing times placed stat"))?;
-        Ok(())
-    }
-
-    pub async fn insert_placement(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let hour = (time_now.as_secs() / (60 * 60)) as i64;
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
 
-        let values = (hour, x, y, rgb, placer_ipaddress, placement_time);
-        info!("Inserting a placement record=(hour={}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})", 
-            hour, x, y, rgb, placer_ipaddress, placement_time);
-        
-        self.session.execute_unpaged(&self.insert_placement, values)
+        let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
+
+        info!("Updating tile record=(grp_key={:?}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
+            grp_key, x, y, rgb, ipaddress, placement_time);
+        info!("Inserting a placement record=(hour={}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
+            hour, x, y, rgb, ipaddress, placement_time);
+
+        let update_tile_values = (grp_key.0, grp_key.1, x, y, rgb, ipaddress, placement_time);
+        let insert_placement_values = (hour, x, y, rgb, ipaddress, placement_time);
+
+        self.session.batch(&self.batch_update_tile, (update_tile_values, insert_placement_values))
             .await
-            .map_err(|e| ServiceError::map_fatal(e, "when inserting placement"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "when executing batch update_tile"))?;
         Ok(())
     }
-    
-    pub async fn insert_placement_now(&self, x: i32, y: i32, rgb: (i8, i8, i8), placer_ipaddress: IpAddr) -> Result<(), ServiceError> {
-        self.insert_placement(x, y, rgb, placer_ipaddress, SystemTime::now()).await
+
+    pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
+        info!("Incrementing times placed for ipaddress={}", ipaddress);
+        
+        self.session.execute_unpaged(&self.increment_times_placed, (ipaddress, ))
+            .await
+            .map_err(|e| ServiceError::map_fatal(e, "when incrementing times placed stat"))?;
+        Ok(())
     }
 }

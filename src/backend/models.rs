@@ -36,7 +36,7 @@ impl GroupKey {
 pub struct Placement {
     pub x: i32,
     pub y: i32,
-    pub rgb: (i8, i8, i8),
+    pub rgb: (u8, u8, u8),
     pub ipaddress: IpAddr,
     pub placement_date: String,
 }
@@ -45,7 +45,7 @@ pub struct Placement {
 pub struct Tile {
     pub x: i32,
     pub y: i32,
-    pub rgb: (i8, i8, i8),
+    pub rgb: (u8, u8, u8),
     pub date: String,
 }
 

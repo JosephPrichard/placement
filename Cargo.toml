@@ -7,6 +7,10 @@ edition = "2021"
 name = "test-place"
 path = "src/test.rs"
 
+[[bin]]
+name = "create-place-schema"
+path = "src/schema.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }

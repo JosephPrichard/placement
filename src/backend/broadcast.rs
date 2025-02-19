@@ -14,7 +14,7 @@ pub fn create_message_subscriber(redis: redis::Client, tx: broadcast::Sender<Dra
     tokio::spawn(async move {
         let mut pubsub = redis.get_async_pubsub()
             .await
-            .map_err(|e| ServiceError::map_fatal(e, "while getting connection in message subscriber"))?;
+            .map_err(|e| ServiceError::map_fatal(e, "while getting async pubsub in message subscriber"))?;
 
         pubsub.subscribe(CHANNEL_BUS_NM)
             .await
@@ -25,16 +25,20 @@ pub fn create_message_subscriber(redis: redis::Client, tx: broadcast::Sender<Dra
             match msg.get_payload::<Vec<u8>>() {
                 Err(err) => error!("Failed to get payload into bytes from message: {:?}", err),
                 Ok(payload) => {
-                    info!("Received a payload of size={} on channel={}", payload.len(), msg.get_channel_name());
-
                     match msg.get_channel_name() {
                         CHANNEL_BUS_NM => match bincode::deserialize::<DrawEvent>(&payload) {
                             Err(error) =>
                                 error!("Failed to deserialize a message for channel={} with error={:?}", CHANNEL_BUS_NM, error),
                             Ok(draw_msg) => {
-                                info!("Received a draw_msg={:?} on channel={}", draw_msg, msg.get_channel_name());
-                                if let Err(err) = tx.send(draw_msg) {
-                                    error!("Failed to send draw event to broadcast channel with error={:?}", err);
+                                info!("Received a draw_msg={:?} on redis channel={}", draw_msg, msg.get_channel_name());
+                                info!("Broadcast channel receiver count={:?}", tx.receiver_count());
+                                if tx.receiver_count() >= 1 {
+                                    if let Err(err) = tx.send(draw_msg) {
+                                        error!("Failed to send draw event to broadcast channel with error={:?}", err);
+                                    }
+                                    info!("Send for draw_msg={:?} to broadcast channel was successful", draw_msg);
+                                } else {
+                                    warn!("Skipped send to broadcast channel, no receivers are listening");
                                 }
                             },
                         },
