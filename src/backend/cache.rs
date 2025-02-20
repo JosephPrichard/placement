@@ -39,7 +39,7 @@ pub async fn get_cached_group<'a>(conn: &mut PooledConnection<'a, RedisConnectio
     }
 }
 
-pub async fn update_cached_group<'a>(conn: &mut PooledConnection<'a, RedisConnectionManager>, draw: DrawEvent) -> Result<(), ServiceError> {
+pub async fn upsert_cached_group<'a>(conn: &mut PooledConnection<'a, RedisConnectionManager>, draw: DrawEvent) -> Result<(), ServiceError> {
     let key = GroupKey::from_point(draw.x, draw.y);
 
     let key_str = format!("({},{})", key.0, key.1);

@@ -4,8 +4,9 @@ use futures_util::StreamExt;
 use scylla::frame::value::Counter;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
+use chrono::LocalResult::Single;
 use scylla::batch::Batch;
-use tracing::log::info;
+use tracing::log::{error, info};
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
     session.query_unpaged("\
@@ -22,33 +23,22 @@ pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
             last_updated_time timestamp,
             PRIMARY KEY ((group_x, group_y), x, y));", ()).await?;
     session.query_unpaged("\
-        CREATE TABLE IF NOT EXISTS pks.stats (
-            ipaddress inet,
-            times_placed counter,
-            PRIMARY KEY (ipaddress));", ()).await?;
-    session.query_unpaged("\
         CREATE TABLE IF NOT EXISTS pks.placements (
-            hour bigint,
+            day bigint,
             x int,
             y int,
             rgb tuple<tinyint, tinyint, tinyint>,
             ipaddress inet,
             placement_time timestamp,
-            PRIMARY KEY (hour, placement_time, ipaddress));", ()).await?;
+            PRIMARY KEY (day, placement_time, ipaddress));", ()).await?;
     Ok(())
-}
-
-async fn increment_times_stat(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = "UPDATE pks.stats SET times_placed = times_placed + 1 WHERE ipaddress = ?;";
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
 }
 
 async fn batch_update_tile(session: &Session) -> Result<Batch, QueryError> {
     let update_tile_query = r#"
         INSERT INTO pks.tiles (group_x, group_y, x, y, rgb, last_updated_ipaddress, last_updated_time)
         VALUES (?, ?, ?, ?, ?, ?, ?);"#;
-    let insert_placement_query = "INSERT INTO pks.placements (hour, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
+    let insert_placement_query = "INSERT INTO pks.placements (day, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
 
     let mut batch: Batch = Default::default();
     batch.append_statement(update_tile_query);
@@ -75,7 +65,8 @@ async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryErr
     let query = r#"
         SELECT x, y, rgb, ipaddress, placement_time
         FROM pks.placements
-        WHERE hour = ? AND placement_time < ?;"#;
+        WHERE day = ? AND placement_time < ?
+        LIMIT ?;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -103,34 +94,30 @@ pub struct QueryStore {
     pub get_one_tile: PreparedStatement,
     pub get_tile_group: PreparedStatement,
     pub get_placements: PreparedStatement,
-    pub get_stats: PreparedStatement,
-    pub increment_times_placed: PreparedStatement,
     pub batch_update_tile: Batch,
 }
 
 impl QueryStore {
     pub async fn init_queries(session: Session) -> Result<QueryStore, ServiceError> {
-        let get_one_tile = get_one_tile(&session)
+        let mut get_one_tile = get_one_tile(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_one_tile query"))?;
-        let get_tile_group = get_tile_group(&session)
+        let mut get_tile_group = get_tile_group(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_tile_group query"))?;
-        let get_placements = get_placements(&session)
+        let mut get_placements = get_placements(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_placements query"))?;
-        let get_stats = get_times_placed(&session)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "while creating get_times_placed query"))?;
-        let increment_times_placed = increment_times_stat(&session)
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "while creating increment_times_stat query"))?;
         let mut batch_update_tile = batch_update_tile(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating batched update_tile query"))?;
+        
+        get_one_tile.set_is_idempotent(true);
+        get_tile_group.set_is_idempotent(true);
+        get_placements.set_is_idempotent(true);
         batch_update_tile.set_is_idempotent(true);
         
-        Ok(QueryStore { get_one_tile, get_tile_group, get_placements, get_stats, increment_times_placed, batch_update_tile, session })
+        Ok(QueryStore { get_one_tile, get_tile_group, get_placements, batch_update_tile, session })
     }
 
     pub async fn get_tile_group(&self, key: GroupKey) -> Result<TileGroup, ServiceError> {
@@ -169,8 +156,8 @@ impl QueryStore {
         match rows_stream.next().await {
             Some(row) => {
                 let (x, y, rgb, last_updated_time) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming tile rows"))?;
-                
-                let date: String = format!("{}", Utc.timestamp_millis_opt(last_updated_time.0).unwrap().to_rfc3339());
+
+                let date = epoch_to_iso_string(last_updated_time.0)?;
                 let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
                 let tile = Tile { x, y, rgb, date };
                 
@@ -181,78 +168,60 @@ impl QueryStore {
         }
     }
 
-    pub async fn get_placements(&self, after_time: DateTime<Utc>) -> Result<Vec<Placement>, ServiceError> {
+    pub async fn get_placements_in_day(&self, after_time: DateTime<Utc>, max_count: i32, placements: &mut Vec<Placement>) -> Result<(), ServiceError> {
         let after_millis = after_time.timestamp_millis();
-        let hour = after_millis / (1000 * 60 * 60);
+        let day = after_millis / (1000 * 60 * 60 * 24);
         
-        info!("Getting placements with hour={}, after_time={}", hour, after_time);
+        info!("Getting placements with day={}, after_time={}", day, after_time);
 
         let mut rows_stream = self.session
-            .execute_iter(self.get_placements.clone(), (hour, CqlTimestamp(after_millis)))
+            .execute_iter(self.get_placements.clone(), (day, CqlTimestamp(after_millis), max_count))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when selecting placements"))?
             .rows_stream::<(i32, i32, (i8, i8, i8), IpAddr, CqlTimestamp)>()
             .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select placement"))?;
-
-        let mut placements = vec![];
+        
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb, ipaddress, placement_time) = 
                 row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
             
-            let placement_date: String = format!("{}", Utc.timestamp_millis_opt(placement_time.0).unwrap().to_rfc3339());
+            let placement_date = epoch_to_iso_string(placement_time.0)?;
             let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
             placements.push(Placement { x, y, rgb, ipaddress, placement_date })
         }
-        Ok(placements)
+        Ok(())
     }
 
-    pub async fn get_times_placed(&self, ipaddress: IpAddr) -> Result<i64, ServiceError> {
-        let mut rows_stream = self.session
-            .execute_iter(self.get_stats.clone(),  (ipaddress, ))
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "when selecting stats"))?
-            .rows_stream::<(Counter, )>()
-            .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select stats result"))?;
-
-        match rows_stream.next().await {
-            Some(row) => {
-                let (times_placed, ) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming stats rows"))?;
-                info!("Selected times_placed={} for ip={}", times_placed.0, ipaddress);
-                Ok(times_placed.0)
-            },
-            None => Ok(0)
-        }
-    }
-
-    pub async fn batch_update_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
+    pub async fn batch_upsert_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
 
         let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        let hour = (time_now.as_secs() / (60 * 60)) as i64;
+        let day = (time_now.as_secs() / (60 * 60 * 24)) as i64;
         let placement_time = CqlTimestamp(time_now.as_millis() as i64);
 
         let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
 
         info!("Updating tile record=(grp_key={:?}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
             grp_key, x, y, rgb, ipaddress, placement_time);
-        info!("Inserting a placement record=(hour={}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
-            hour, x, y, rgb, ipaddress, placement_time);
+        info!("Inserting a placement record=(day={}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
+            day, x, y, rgb, ipaddress, placement_time);
 
         let update_tile_values = (grp_key.0, grp_key.1, x, y, rgb, ipaddress, placement_time);
-        let insert_placement_values = (hour, x, y, rgb, ipaddress, placement_time);
+        let insert_placement_values = (day, x, y, rgb, ipaddress, placement_time);
 
         self.session.batch(&self.batch_update_tile, (update_tile_values, insert_placement_values))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when executing batch update_tile"))?;
         Ok(())
     }
+}
 
-    pub async fn increment_times_placed(&self, ipaddress: IpAddr) -> Result<(), ServiceError> {
-        info!("Incrementing times placed for ipaddress={}", ipaddress);
-        
-        self.session.execute_unpaged(&self.increment_times_placed, (ipaddress, ))
-            .await
-            .map_err(|e| ServiceError::map_fatal(e, "when incrementing times placed stat"))?;
-        Ok(())
+fn epoch_to_iso_string(unix_epoch: i64) -> Result<String, ServiceError> {
+    match Utc.timestamp_millis_opt(unix_epoch) {
+        Single(time) => Ok(format!("{}", time.to_rfc3339())),
+        _ => {
+            error!("Failed to convert unix epoch from cassandra database into in memory datetime format");
+            Err(ServiceError::Fatal)
+        } 
     }
 }

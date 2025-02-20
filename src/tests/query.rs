@@ -28,7 +28,7 @@ async fn test_tiles(query: &QueryStore) {
 
     let time = SystemTime::from(Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
 
-    query.batch_update_tile(5, 4, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), time).await.unwrap();
+    query.batch_upsert_tile(5, 4, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), time).await.unwrap();
     let tile2 = query.get_one_tile(5, 4).await;
 
     assert_eq!(tile1, Err(ServiceError::NotFound(String::from("tile not found at given location: (1, 1)"))));
@@ -38,9 +38,9 @@ async fn test_tiles(query: &QueryStore) {
 async fn test_tile_group(query: &QueryStore) {
     query.session.query_unpaged("TRUNCATE pks.tiles;", ()).await.unwrap();
 
-    query.batch_update_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
-    query.batch_update_tile(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
-    query.batch_update_tile(GROUP_DIM_I32 + 1, GROUP_DIM_I32 + 1, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
+    query.batch_upsert_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
+    query.batch_upsert_tile(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
+    query.batch_upsert_tile(GROUP_DIM_I32 + 1, GROUP_DIM_I32 + 1, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
     let tiles = query.get_tile_group(GroupKey(0, 0)).await.unwrap();
 
     let mut expected = TileGroup::empty();
@@ -57,12 +57,13 @@ async fn test_placements(query: &QueryStore) {
     let time2 = SystemTime::from(Utc.with_ymd_and_hms(2020, 1, 1, 0, 15, 0).unwrap());
     let time3 = SystemTime::from(Utc.with_ymd_and_hms(2020, 1, 1, 0, 30, 0).unwrap());
 
-    query.batch_update_tile(1, 0, (3, 3, 3), IpAddr::V4(Ipv4Addr::new(127, 2, 2, 2)), time1).await.unwrap();
-    query.batch_update_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)), time2).await.unwrap();
-    query.batch_update_tile(2, 0, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)), time3).await.unwrap();
+    query.batch_upsert_tile(1, 0, (3, 3, 3), IpAddr::V4(Ipv4Addr::new(127, 2, 2, 2)), time1).await.unwrap();
+    query.batch_upsert_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)), time2).await.unwrap();
+    query.batch_upsert_tile(2, 0, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)), time3).await.unwrap();
 
     let time4 = Utc.with_ymd_and_hms(2020, 1, 1, 0, 45, 0).unwrap();
-    let placements = query.get_placements(time4).await.unwrap();
+    let mut placements = vec![];
+    query.get_placements_in_day(time4, 10, &mut placements).await.unwrap();
 
     let expected = vec![Placement {
         x: 0,
@@ -80,27 +81,6 @@ async fn test_placements(query: &QueryStore) {
     assert_eq!(placements, expected)
 }
 
-async fn test_times_placed_counter(query: &QueryStore) {
-    query.session.query_unpaged("TRUNCATE pks.stats;", ()).await.unwrap();
-
-    let ip = IpAddr::V4(Ipv4Addr::new(127, 2, 2, 2));
-
-    let times1 = query.get_times_placed(ip).await.unwrap();
-
-    query.increment_times_placed(ip).await.unwrap();
-
-    let times2 = query.get_times_placed(ip).await.unwrap();
-
-    query.increment_times_placed(ip).await.unwrap();
-    query.increment_times_placed(ip).await.unwrap();
-
-    let times3 = query.get_times_placed(ip).await.unwrap();
-
-    assert_eq!(times1, 0);
-    assert_eq!(times2, 1);
-    assert_eq!(times3, 3)
-}
-
 pub async fn test_query() {
     let port = 9043;
     let query = init_queries(port).await;
@@ -109,5 +89,4 @@ pub async fn test_query() {
     test_tiles(&query).await;
     test_tile_group(&query).await;
     test_placements(&query).await;
-    test_times_placed_counter(&query).await;
 }

@@ -1,4 +1,4 @@
-use crate::backend::cache::{get_cached_group, set_cached_group, update_cached_group};
+use crate::backend::cache::{get_cached_group, set_cached_group, upsert_cached_group};
 use crate::backend::models::{DrawEvent, GroupKey, TileGroup, GROUP_DIM_I32};
 use bb8_redis::bb8::Pool;
 use bb8_redis::RedisConnectionManager;
@@ -36,8 +36,8 @@ async fn test_update_cache(redis: &Pool<RedisConnectionManager>) {
     group1.set(2, 2, (1, 1, 1));
 
     set_cached_group(conn, GroupKey(0, 0), &group1).await.unwrap();
-    update_cached_group(conn, DrawEvent { x: 3, y: 3, rgb: (2, 2, 2) }).await.unwrap(); // this will update group 1
-    update_cached_group(conn, DrawEvent { x: GROUP_DIM_I32 + 3, y: GROUP_DIM_I32 * 2, rgb: (3, 3, 3) }).await.unwrap(); // this will create then update group 2
+    upsert_cached_group(conn, DrawEvent { x: 3, y: 3, rgb: (2, 2, 2) }).await.unwrap(); // this will update group 1
+    upsert_cached_group(conn, DrawEvent { x: GROUP_DIM_I32 + 3, y: GROUP_DIM_I32 * 2, rgb: (3, 3, 3) }).await.unwrap(); // this will create then update group 2
 
     let mut group1_expected = group1.clone();
     group1_expected.set(3, 3, (2, 2, 2));
