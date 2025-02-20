@@ -7,6 +7,7 @@ use std::{net::IpAddr, time::SystemTime};
 use chrono::LocalResult::Single;
 use scylla::batch::Batch;
 use tracing::log::{error, info};
+use crate::backend::utils::{epoch_to_iso_string, epoch_to_day};
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
     session.query_unpaged("\
@@ -65,8 +66,7 @@ async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryErr
     let query = r#"
         SELECT x, y, rgb, ipaddress, placement_time
         FROM pks.placements
-        WHERE day = ? AND placement_time < ?
-        LIMIT ?;"#;
+        WHERE day = ?;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -111,7 +111,7 @@ impl QueryStore {
         let mut batch_update_tile = batch_update_tile(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating batched update_tile query"))?;
-        
+
         get_one_tile.set_is_idempotent(true);
         get_tile_group.set_is_idempotent(true);
         get_placements.set_is_idempotent(true);
@@ -168,36 +168,35 @@ impl QueryStore {
         }
     }
 
-    pub async fn get_placements_in_day(&self, after_time: DateTime<Utc>, max_count: i32, placements: &mut Vec<Placement>) -> Result<(), ServiceError> {
-        let after_millis = after_time.timestamp_millis();
-        let day = after_millis / (1000 * 60 * 60 * 24);
-        
-        info!("Getting placements with day={}, after_time={}", day, after_time);
+    pub async fn get_placements_in_day(&self, day: i64) -> Result<Vec<Placement>, ServiceError> {
+        info!("Getting placements with day={}", day);
 
         let mut rows_stream = self.session
-            .execute_iter(self.get_placements.clone(), (day, CqlTimestamp(after_millis), max_count))
+            .execute_iter(self.get_placements.clone(), (day, ))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when selecting placements"))?
             .rows_stream::<(i32, i32, (i8, i8, i8), IpAddr, CqlTimestamp)>()
             .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select placement"))?;
-        
+
+        let mut placements = vec![];
         while let Some(row) = rows_stream.next().await {
             let (x, y, rgb, ipaddress, placement_time) = 
                 row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
-            
+
             let placement_date = epoch_to_iso_string(placement_time.0)?;
             let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
             placements.push(Placement { x, y, rgb, ipaddress, placement_date })
         }
-        Ok(())
+        Ok(placements)
     }
 
     pub async fn batch_upsert_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
 
-        let time_now = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        let day = (time_now.as_secs() / (60 * 60 * 24)) as i64;
-        let placement_time = CqlTimestamp(time_now.as_millis() as i64);
+        let duration = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let day = epoch_to_day(duration);
+
+        let placement_time = CqlTimestamp(duration.as_millis() as i64);
 
         let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
 
@@ -216,12 +215,3 @@ impl QueryStore {
     }
 }
 
-fn epoch_to_iso_string(unix_epoch: i64) -> Result<String, ServiceError> {
-    match Utc.timestamp_millis_opt(unix_epoch) {
-        Single(time) => Ok(format!("{}", time.to_rfc3339())),
-        _ => {
-            error!("Failed to convert unix epoch from cassandra database into in memory datetime format");
-            Err(ServiceError::Fatal)
-        } 
-    }
-}

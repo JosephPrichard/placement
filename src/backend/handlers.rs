@@ -4,7 +4,6 @@ use axum::extract::{ConnectInfo, Query, State};
 use axum::response::{IntoResponse, Sse};
 use futures_util::Stream;
 use std::net::{IpAddr, SocketAddr};
-use std::ops::Add;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -14,7 +13,6 @@ use axum::Json;
 use axum::response::sse::{Event, KeepAlive};
 use bb8_redis::bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast};
@@ -23,6 +21,7 @@ use tracing::log::{error, info, warn};
 use crate::backend::broadcast::broadcast_message;
 use crate::backend::cache::{acquire_conn, get_cached_group, set_cached_group, upsert_cached_group};
 use crate::backend::query::QueryStore;
+use crate::backend::utils::epoch_to_day;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -178,55 +177,34 @@ pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): St
     }
 }
 
-async fn get_placements(server: &ServerState, timestamp: DateTime<Utc>)-> Result<Vec<Placement>, ServiceError> {
-    static MAX_COUNT: i32 = 20;
-
-    let mut placements = vec![];
-    server.query.get_placements_in_day(timestamp, MAX_COUNT, &mut placements).await?;
-    
-    let mut remaining = MAX_COUNT - placements.len() as i32;
-
-    // fetch until we reach the maximum count or run out of elements
-    while remaining > 0 {
-        // this is the end of the day - fetch more by rounding to the next day
-        let timestamp = timestamp + TimeDelta::milliseconds(1);
-        server.query.get_placements_in_day(timestamp, MAX_COUNT, &mut placements).await?;
-
-        let next_remaining = MAX_COUNT - placements.len() as i32;
-        if next_remaining == remaining {
-            // no more elements means this is end of the placement log
-            break
-        }
-        remaining = next_remaining;
-    }
-
-    Ok(placements)
-}
-
 #[derive(Debug, Deserialize)]
 pub struct TimeQuery {
-    timestamp: String,
+    days_ago: i64,
 }
 
 pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server): State<ServerState>) -> impl IntoResponse {
     info!("Handling GET placements request query={:?}", query);
 
-    let timestamp = match DateTime::parse_from_rfc3339(query.timestamp.as_str()) {
-        Ok(timestamp) => Utc.from_utc_datetime(&timestamp.naive_utc()),
-        Err(err) => {
-            error!("Failed to parse timestamp={:?} err={:?}", query.timestamp, err);
-            return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Invalid input: timestamp should be parseable ISO format".to_string())
-        },
-    };
+    if query.days_ago < 0 {
+        return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Days ago query must be a positive integer".to_string())
+    }
 
-    let result = server.query.get_placements_in_day(timestamp, 1000).await.instrument(info_span!("Get placements")).await;
+    let duration_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    let day_now = epoch_to_day(duration_now);
+    let day = day_now - query.days_ago;
+
+    if day < 0 {
+        return (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], "[]".to_string())
+    }
+
+    let result = server.query.get_placements_in_day(day).instrument(info_span!("Get placements")).await;
     match result {
         Ok(placements) => match serde_json::to_string(&placements) {
             Ok(json) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], json),
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string()),
         },
         Err(err) => {
-            error!("Failed to get the placements after timestamp={:?} err={:?}", timestamp, err);
+            error!("Failed to get the placements after day={:?} err={:?}", day, err);
             (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
         }
     }

@@ -5,6 +5,7 @@ use scylla::SessionBuilder;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::SystemTime;
 use tracing::log::info;
+use crate::backend::utils::epoch_to_day;
 
 async fn init_queries(port: u16) -> QueryStore {
     let session = SessionBuilder::new()
@@ -32,7 +33,7 @@ async fn test_tiles(query: &QueryStore) {
     let tile2 = query.get_one_tile(5, 4).await;
 
     assert_eq!(tile1, Err(ServiceError::NotFound(String::from("tile not found at given location: (1, 1)"))));
-    assert_eq!(tile2, Ok(Tile { x: 5, y: 4, rgb: (2, 2, 2), date: "2025/01/01 00:00:00".to_string() }));
+    assert_eq!(tile2, Ok(Tile { x: 5, y: 4, rgb: (2, 2, 2), date: "2025-01-01T00:00:00+00:00".to_string() }));
 }
 
 async fn test_tile_group(query: &QueryStore) {
@@ -51,6 +52,8 @@ async fn test_tile_group(query: &QueryStore) {
 }
 
 async fn test_placements(query: &QueryStore) {
+    let time_now = SystemTime::from(Utc.with_ymd_and_hms(2020, 1, 1, 0, 30, 0).unwrap());
+
     query.session.query_unpaged("TRUNCATE pks.placements;", ()).await.unwrap();
 
     let time1 = SystemTime::from(Utc.with_ymd_and_hms(2015, 1, 1, 0, 0, 0).unwrap());
@@ -61,28 +64,29 @@ async fn test_placements(query: &QueryStore) {
     query.batch_upsert_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)), time2).await.unwrap();
     query.batch_upsert_tile(2, 0, (2, 2, 2), IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)), time3).await.unwrap();
 
-    let time4 = Utc.with_ymd_and_hms(2020, 1, 1, 0, 45, 0).unwrap();
-    let mut placements = vec![];
-    query.get_placements_in_day(time4, 10, &mut placements).await.unwrap();
+    let duration_now = time_now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    let day_now = epoch_to_day(duration_now);
+
+    let placements = query.get_placements_in_day(day_now).await.unwrap();
 
     let expected = vec![Placement {
         x: 0,
         y: 0,
         rgb: (1, 1, 1),
         ipaddress: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)),
-        placement_date: "2020/01/01 00:15:00".to_string(),
+        placement_date: "2020-01-01T00:15:00+00:00".to_string(),
     }, Placement {
         x: 2,
         y: 0,
         rgb: (2, 2, 2),
         ipaddress: IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)),
-        placement_date: "2020/01/01 00:30:00".to_string(),
+        placement_date: "2020-01-01T00:30:00+00:00".to_string(),
     }];
     assert_eq!(placements, expected)
 }
 
 pub async fn test_query() {
-    let port = 9043;
+    let port = 9042;
     let query = init_queries(port).await;
     info!("Successfully initialized scylla queries");
 
