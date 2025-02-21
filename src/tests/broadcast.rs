@@ -1,8 +1,7 @@
 use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
 use crate::backend::models::DrawEvent;
-use bb8_redis::bb8::Pool;
-use bb8_redis::{redis, RedisConnectionManager};
 use std::time::Duration;
+use deadpool_redis::{redis, Config, Pool, Runtime};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
@@ -17,7 +16,7 @@ static DRAW_MSGS: [DrawEvent; 4] = [
     DrawEvent { x: 1, y: 1, rgb: (3, 3, 3) }
 ];
 
-async fn test_broadcast_messaging(client: redis::Client, pool: Pool<RedisConnectionManager>) {
+async fn test_broadcast_messaging(client: redis::Client, pool: Pool) {
     let (tx, _) = broadcast::channel(16);
 
     let subscriber_handle = create_message_subscriber(client, tx.clone());
@@ -43,7 +42,7 @@ async fn test_broadcast_messaging(client: redis::Client, pool: Pool<RedisConnect
     }
     
     for draw_msg in DRAW_MSGS {
-        broadcast_message(&pool, draw_msg).await.unwrap();
+        broadcast_message(&mut pool.get().await.unwrap(), draw_msg).await.unwrap();
     }
 
     let mut recv_handle = tokio::spawn(async move {
@@ -74,7 +73,7 @@ pub async fn test_broadcast() {
     let port = 6380;
     let redis_url = format!("redis://127.0.0.1:{}/", port);
     let client = redis::Client::open(redis_url.as_str()).unwrap();
-    let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
+    let redis = Config::from_url(redis_url).create_pool(Some(Runtime::Tokio1)).unwrap();
     
     test_broadcast_messaging(client, redis).await;
 

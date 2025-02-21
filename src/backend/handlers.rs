@@ -1,34 +1,22 @@
 use std::convert::Infallible;
-use crate::backend::models::{DrawEvent, GroupKey, Placement, ServiceError};
+use std::fmt::Debug;
+use crate::backend::models::{DrawEvent, GroupKey, ServiceError};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::response::{IntoResponse, Sse};
 use futures_util::Stream;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use axum::http::{HeaderMap, StatusCode};
 use axum::http::header::CONTENT_TYPE;
 use axum::Json;
 use axum::response::sse::{Event, KeepAlive};
-use bb8_redis::bb8::Pool;
-use bb8_redis::RedisConnectionManager;
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{broadcast};
 use tracing::{info_span, Instrument};
 use tracing::log::{error, info, warn};
-use crate::backend::broadcast::broadcast_message;
-use crate::backend::cache::{acquire_conn, get_cached_group, set_cached_group, upsert_cached_group};
-use crate::backend::query::QueryStore;
+use crate::backend::service::{draw_tile, get_group, ServerState};
 use crate::backend::utils::epoch_to_day;
-
-#[derive(Clone)]
-pub struct ServerState {
-    pub broadcast_tx: broadcast::Sender<DrawEvent>,
-    pub redis: Pool<RedisConnectionManager>,
-    pub query: Arc<QueryStore>,
-}
 
 pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = server.broadcast_tx.subscribe();
@@ -90,24 +78,6 @@ pub async fn handle_get_tile(Query(query): Query<PointQuery>, State(server): Sta
     }
 }
 
-async fn draw_tile(server: &ServerState, draw: DrawEvent, ip: IpAddr) -> Result<(), ServiceError> {
-    server.query.batch_upsert_tile(draw.x, draw.y, draw.rgb, ip, SystemTime::now()).instrument(info_span!("Batch update tile")).await?;
-
-    // run these in a background task, we don't need to report to client if this fails.
-    let server = server.clone();
-    tokio::spawn(async move {
-        if let Err(err) = async move {
-            let conn = &mut acquire_conn(&server.redis).await?;
-            upsert_cached_group(conn, draw).instrument(info_span!("Update cached group")).await?;
-            broadcast_message(&server.redis, draw).await?;
-            Ok::<(), ServiceError>(())
-        }.await {
-            error!("Failed in draw tile background task: {:?}", err);
-        };
-    });
-    Ok(())
-}
-
 fn get_ip_address(headers: HeaderMap, addr: SocketAddr) -> Result<IpAddr, &'static str> {
     match headers.get("X-Forwarded-For") {
         None => Ok(addr.ip()),
@@ -134,39 +104,25 @@ pub async fn handle_post_tile(State(server): State<ServerState>, ConnectInfo(add
 
     let ip = match get_ip_address(headers, addr) {
         Ok(ip) => ip,
-        Err(str) => return (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], str)
+        Err(str) => return (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], str.to_string())
     };
     
     let result = draw_tile(&server, body, ip).instrument(info_span!("Draw tile")).await;
     match result {
-        Ok(()) => (StatusCode::OK, [(CONTENT_TYPE, "text/plain")], "Successfully drew the tile"),
+        Ok(()) => (StatusCode::OK, [(CONTENT_TYPE, "text/plain")], "Successfully drew the tile".to_string()),
+        Err(ServiceError::Restricted(msg)) => (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], msg),
         Err(err) => {
             error!("Failed to draw the tile, event={:?} err={:?}", body, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred")
+            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
         }
     }
 }
 
-async fn get_group(server: &ServerState, key: GroupKey) -> Result<Vec<u8>, ServiceError> {
-    let conn = &mut acquire_conn(&server.redis).await?;
-
-    let group_opt = get_cached_group(conn, key).await?;
-    let group = match group_opt {
-        None => server.query.get_tile_group(key).await?,
-        Some(group) => group
-    };
-
-    set_cached_group(conn, key, &group).await?;
-
-    let buffer = group.0;
-    Ok(buffer)
-}
-
 pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): State<ServerState>) -> impl IntoResponse {
     info!("Handling GET group request query={:?}", query);
-    
+
     let key = GroupKey(query.x, query.y);
-    
+
     let result = get_group(&server, key).instrument(info_span!("Get group")).await;
     match result {
         Ok(buffer) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], buffer),
@@ -179,19 +135,20 @@ pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): St
 
 #[derive(Debug, Deserialize)]
 pub struct TimeQuery {
-    days_ago: i64,
+    days_ago: Option<i64>,
 }
 
 pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server): State<ServerState>) -> impl IntoResponse {
     info!("Handling GET placements request query={:?}", query);
 
-    if query.days_ago < 0 {
+    let days_ago = query.days_ago.unwrap_or(0);
+    if days_ago < 0 {
         return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Days ago query must be a positive integer".to_string())
     }
 
     let duration_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let day_now = epoch_to_day(duration_now);
-    let day = day_now - query.days_ago;
+    let day = day_now - days_ago;
 
     if day < 0 {
         return (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], "[]".to_string())

@@ -1,3 +1,3 @@
 pub mod query;
-pub mod cache;
+pub mod dict;
 pub mod broadcast;

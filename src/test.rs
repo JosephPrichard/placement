@@ -1,5 +1,5 @@
 use crate::tests::broadcast::test_broadcast;
-use crate::tests::cache::test_cache;
+use crate::tests::dict::test_cache;
 use crate::tests::query::test_query;
 use tracing::log::info;
 

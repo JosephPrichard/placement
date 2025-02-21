@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::net::IpAddr;
 use tracing::log::error;
 
 pub const GROUP_DIM: usize = 100;
@@ -10,6 +9,7 @@ pub const GROUP_LEN: usize = GROUP_DIM * GROUP_DIM * 3;
 #[derive(Debug, PartialEq)]
 pub enum ServiceError {
     NotFound(String), // indicates a resource couldn't be found, and the only way to handle that is to tell the client
+    Restricted(String), // some kind of rule prevents an operation from being performed
     Fatal, // indicates something failed that wasn't supposed to fail
 }
 
@@ -37,7 +37,6 @@ pub struct Placement {
     pub x: i32,
     pub y: i32,
     pub rgb: (u8, u8, u8),
-    pub ipaddress: IpAddr,
     pub placement_date: String,
 }
 

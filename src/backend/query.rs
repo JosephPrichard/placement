@@ -1,12 +1,10 @@
 use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup};
-use chrono::{DateTime, TimeZone, Utc};
 use futures_util::StreamExt;
-use scylla::frame::value::Counter;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::{net::IpAddr, time::SystemTime};
-use chrono::LocalResult::Single;
+use std::time::Duration;
 use scylla::batch::Batch;
-use tracing::log::{error, info};
+use tracing::log::info;
 use crate::backend::utils::{epoch_to_iso_string, epoch_to_day};
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
@@ -32,17 +30,23 @@ pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
             ipaddress inet,
             placement_time timestamp,
             PRIMARY KEY (day, placement_time, ipaddress));", ()).await?;
+    session.query_unpaged("\
+        CREATE TABLE IF NOT EXISTS pks.users (
+            ipaddress inet,
+            placed_time timestamp,
+            PRIMARY KEY (ipaddress));", ()).await?;
     Ok(())
 }
 
-async fn batch_update_tile(session: &Session) -> Result<Batch, QueryError> {
-    let update_tile_query = r#"
+async fn batch_upsert_tile(session: &Session) -> Result<Batch, QueryError> {
+    let upsert_tile_query = r#"
         INSERT INTO pks.tiles (group_x, group_y, x, y, rgb, last_updated_ipaddress, last_updated_time)
         VALUES (?, ?, ?, ?, ?, ?, ?);"#;
     let insert_placement_query = "INSERT INTO pks.placements (day, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
+    let update_users_query = "UPDATE pks.users SET placed_time = ? WHERE ipaddress = ? IF placed_time < ?;";
 
     let mut batch: Batch = Default::default();
-    batch.append_statement(update_tile_query);
+    batch.append_statement(upsert_tile_query);
     batch.append_statement(insert_placement_query);
 
     let batch: Batch = session.prepare_batch(&batch).await?;
@@ -64,9 +68,10 @@ async fn get_one_tile(session: &Session) -> Result<PreparedStatement, QueryError
 
 async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryError> {
     let query = r#"
-        SELECT x, y, rgb, ipaddress, placement_time
+        SELECT x, y, rgb, placement_time
         FROM pks.placements
-        WHERE day = ?;"#;
+        WHERE day = ?
+        ORDER BY placement_time DESC;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -108,7 +113,7 @@ impl QueryStore {
         let mut get_placements = get_placements(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating get_placements query"))?;
-        let mut batch_update_tile = batch_update_tile(&session)
+        let mut batch_update_tile = batch_upsert_tile(&session)
             .await
             .map_err(|e| ServiceError::map_fatal(e, "while creating batched update_tile query"))?;
 
@@ -175,40 +180,40 @@ impl QueryStore {
             .execute_iter(self.get_placements.clone(), (day, ))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when selecting placements"))?
-            .rows_stream::<(i32, i32, (i8, i8, i8), IpAddr, CqlTimestamp)>()
+            .rows_stream::<(i32, i32, (i8, i8, i8), CqlTimestamp)>()
             .map_err(|e| ServiceError::map_fatal(e, "while extracting rows stream from select placement"))?;
 
         let mut placements = vec![];
         while let Some(row) = rows_stream.next().await {
-            let (x, y, rgb, ipaddress, placement_time) = 
+            let (x, y, rgb, placement_time) = 
                 row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
 
             let placement_date = epoch_to_iso_string(placement_time.0)?;
             let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
-            placements.push(Placement { x, y, rgb, ipaddress, placement_date })
+            placements.push(Placement { x, y, rgb, placement_date })
         }
         Ok(placements)
     }
 
-    pub async fn batch_upsert_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time: SystemTime) -> Result<(), ServiceError> {
+    pub async fn batch_upsert_tile(&self, x: i32, y: i32, rgb: (u8, u8, u8), ipaddress: IpAddr, time_now: SystemTime) -> Result<(), ServiceError> {
         let grp_key = GroupKey::from_point(x, y);
 
-        let duration = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        let day = epoch_to_day(duration);
-
-        let placement_time = CqlTimestamp(duration.as_millis() as i64);
+        let duration_now = time_now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        
+        let day_now = epoch_to_day(duration_now);
+        let placement_time = CqlTimestamp(duration_now.as_millis() as i64);
 
         let rgb = (rgb.0 as i8, rgb.1 as i8, rgb.2 as i8); // cast to signed integers because scylla can only stored signed integers
 
         info!("Updating tile record=(grp_key={:?}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
             grp_key, x, y, rgb, ipaddress, placement_time);
         info!("Inserting a placement record=(day={}, x={}, y={}, rgb={:?}, placer_ipaddress={:?}, placement_time={:?})",
-            day, x, y, rgb, ipaddress, placement_time);
+            day_now, x, y, rgb, ipaddress, placement_time);
 
-        let update_tile_values = (grp_key.0, grp_key.1, x, y, rgb, ipaddress, placement_time);
-        let insert_placement_values = (day, x, y, rgb, ipaddress, placement_time);
+        let upsert_tile_values = (grp_key.0, grp_key.1, x, y, rgb, ipaddress, placement_time);
+        let insert_placement_values = (day_now, x, y, rgb, ipaddress, placement_time);
 
-        self.session.batch(&self.batch_update_tile, (update_tile_values, insert_placement_values))
+        self.session.batch(&self.batch_update_tile, (upsert_tile_values, insert_placement_values))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when executing batch update_tile"))?;
         Ok(())

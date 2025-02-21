@@ -1,8 +1,7 @@
+use deadpool_redis::redis::AsyncCommands;
 use crate::backend::models::{DrawEvent, ServiceError};
-use bb8_redis::bb8::Pool;
-use bb8_redis::redis::AsyncCommands;
-use bb8_redis::{redis, RedisConnectionManager};
 use bincode;
+use deadpool_redis::{redis, Connection};
 use futures_util::StreamExt;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -51,9 +50,7 @@ pub fn create_message_subscriber(redis: redis::Client, tx: broadcast::Sender<Dra
     })
 }
 
-pub async fn broadcast_message(redis: &Pool<RedisConnectionManager>, msg: DrawEvent) -> Result<(), ServiceError> {
-    let mut conn = redis.get().await.unwrap();
-    
+pub async fn broadcast_message(conn: &mut Connection, msg: DrawEvent) -> Result<(), ServiceError> {
     let bytes = bincode::serialize(&msg)
         .map_err(|e| ServiceError::map_fatal(e, "when serializing draw_msg"))?;
     

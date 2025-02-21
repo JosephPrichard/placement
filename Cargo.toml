@@ -16,6 +16,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }
 async-stream = "0.3.6"
 bb8-redis = "0.21.0"
+deadpool-redis = "0.19.0"
 scylla = "0.15.1"
 tokio = { version = "1.43", features = ["full"] }
 futures-util = "0.3.31"

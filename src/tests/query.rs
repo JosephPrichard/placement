@@ -3,7 +3,7 @@ use crate::backend::query::{create_schema, QueryStore};
 use chrono::{TimeZone, Utc};
 use scylla::SessionBuilder;
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tracing::log::info;
 use crate::backend::utils::epoch_to_day;
 
@@ -40,7 +40,7 @@ async fn test_tile_group(query: &QueryStore) {
     query.session.query_unpaged("TRUNCATE pks.tiles;", ()).await.unwrap();
 
     query.batch_upsert_tile(0, 0, (1, 1, 1), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
-    query.batch_upsert_tile(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
+    query.batch_upsert_tile(2, 0, (5, 5, 5), IpAddr::V4(Ipv4Addr::new(127, 0, 1, 1)), SystemTime::now()).await.unwrap();
     query.batch_upsert_tile(GROUP_DIM_I32 + 1, GROUP_DIM_I32 + 1, (6, 6, 6), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), SystemTime::now()).await.unwrap();
     let tiles = query.get_tile_group(GroupKey(0, 0)).await.unwrap();
 
@@ -73,13 +73,11 @@ async fn test_placements(query: &QueryStore) {
         x: 0,
         y: 0,
         rgb: (1, 1, 1),
-        ipaddress: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)),
         placement_date: "2020-01-01T00:15:00+00:00".to_string(),
     }, Placement {
         x: 2,
         y: 0,
         rgb: (2, 2, 2),
-        ipaddress: IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1)),
         placement_date: "2020-01-01T00:30:00+00:00".to_string(),
     }];
     assert_eq!(placements, expected)

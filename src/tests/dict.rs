@@ -1,9 +1,8 @@
-use crate::backend::cache::{get_cached_group, set_cached_group, upsert_cached_group};
+use deadpool_redis::{Config, Pool, Runtime};
+use crate::backend::dict::{get_cached_group, set_cached_group, upsert_cached_group};
 use crate::backend::models::{DrawEvent, GroupKey, TileGroup, GROUP_DIM_I32};
-use bb8_redis::bb8::Pool;
-use bb8_redis::RedisConnectionManager;
 
-async fn test_get_set_cache(redis: &Pool<RedisConnectionManager>) {
+async fn test_get_set_cache(redis: &Pool) {
     let conn = &mut redis.get().await.unwrap();
 
     let mut group1 = TileGroup::empty();
@@ -28,7 +27,7 @@ async fn test_get_set_cache(redis: &Pool<RedisConnectionManager>) {
     assert_eq!(None, group3);
 }
 
-async fn test_update_cache(redis: &Pool<RedisConnectionManager>) {
+async fn test_update_cache(redis: &Pool) {
     let conn = &mut redis.get().await.unwrap();
     
     let mut group1 = TileGroup::empty();
@@ -52,10 +51,14 @@ async fn test_update_cache(redis: &Pool<RedisConnectionManager>) {
     assert_eq!(Some(group2_expected), group2);
 }
 
+async fn test_redis_lock() {
+
+}
+
 pub async fn test_cache() {
     let port = 6380;
     let redis_url = format!("redis://127.0.0.1:{}/", port);
-    let redis = Pool::builder().build(RedisConnectionManager::new(redis_url).unwrap()).await.unwrap();
+    let redis = Config::from_url(redis_url).create_pool(Some(Runtime::Tokio1)).unwrap();
 
     test_get_set_cache(&redis).await;
     test_update_cache(&redis).await;
