@@ -1,7 +1,7 @@
-use crate::backend::broadcast::{broadcast_message, create_message_subscriber};
-use crate::backend::models::DrawEvent;
-use std::time::Duration;
+use crate::server::broadcast::{broadcast_message, create_channel_subscriber};
+use crate::server::models::DrawEvent;
 use deadpool_redis::{redis, Config, Pool, Runtime};
+use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
@@ -19,7 +19,7 @@ static DRAW_MSGS: [DrawEvent; 4] = [
 async fn test_broadcast_messaging(client: redis::Client, pool: Pool) {
     let (tx, _) = broadcast::channel(16);
 
-    let subscriber_handle = create_message_subscriber(client, tx.clone());
+    let subscriber_handle = create_channel_subscriber(client, tx.clone());
 
     let mut recv_handles = vec![];
     for i in 0..3 {

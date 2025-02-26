@@ -9,14 +9,14 @@ pub const GROUP_LEN: usize = GROUP_DIM * GROUP_DIM * 3;
 #[derive(Debug, PartialEq)]
 pub enum ServiceError {
     NotFound(String), // indicates a resource couldn't be found, and the only way to handle that is to tell the client
-    Restricted(String), // some kind of rule prevents an operation from being performed
-    Fatal, // indicates something failed that wasn't supposed to fail
+    Forbidden(String), // some kind of rule prevents an operation from being performed
+    Fatal(String), // indicates something failed at runtime that wasn't supposed to fail
 }
 
 impl ServiceError {
-    pub fn map_fatal(target: impl Debug, msg: &str) -> ServiceError {
+    pub fn map_fatal(target: impl ToString + Debug, msg: &str) -> ServiceError {
         error!("Fatal error has occurred {}: {:?}", msg, target);
-        ServiceError::Fatal
+        ServiceError::Fatal(target.to_string())
     }
 }
 
@@ -37,7 +37,7 @@ pub struct Placement {
     pub x: i32,
     pub y: i32,
     pub rgb: (u8, u8, u8),
-    pub placement_date: String,
+    pub placement_date: String, // RFC 3339 timestamp
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ pub struct Tile {
     pub x: i32,
     pub y: i32,
     pub rgb: (u8, u8, u8),
-    pub date: String,
+    pub date: String, // RFC 3339 timestamp
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

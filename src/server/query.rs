@@ -1,11 +1,12 @@
-use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup};
+use crate::server::models::{GroupKey, Placement, ServiceError, Tile, TileGroup};
+use crate::server::utils::{epoch_to_day, epoch_to_iso_string};
 use futures_util::StreamExt;
-use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
-use std::{net::IpAddr, time::SystemTime};
-use std::time::Duration;
 use scylla::batch::Batch;
+use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
+use std::time::Duration;
+use std::{net::IpAddr, time::SystemTime};
+use scylla::statement::{Consistency, SerialConsistency};
 use tracing::log::info;
-use crate::backend::utils::{epoch_to_iso_string, epoch_to_day};
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
     session.query_unpaged("\
@@ -30,11 +31,6 @@ pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
             ipaddress inet,
             placement_time timestamp,
             PRIMARY KEY (day, placement_time, ipaddress));", ()).await?;
-    session.query_unpaged("\
-        CREATE TABLE IF NOT EXISTS pks.users (
-            ipaddress inet,
-            placed_time timestamp,
-            PRIMARY KEY (ipaddress));", ()).await?;
     Ok(())
 }
 
@@ -43,7 +39,6 @@ async fn batch_upsert_tile(session: &Session) -> Result<Batch, QueryError> {
         INSERT INTO pks.tiles (group_x, group_y, x, y, rgb, last_updated_ipaddress, last_updated_time)
         VALUES (?, ?, ?, ?, ?, ?, ?);"#;
     let insert_placement_query = "INSERT INTO pks.placements (day, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);";
-    let update_users_query = "UPDATE pks.users SET placed_time = ? WHERE ipaddress = ? IF placed_time < ?;";
 
     let mut batch: Batch = Default::default();
     batch.append_statement(upsert_tile_query);
@@ -57,10 +52,7 @@ async fn get_one_tile(session: &Session) -> Result<PreparedStatement, QueryError
     let query = r#"
         SELECT x, y, rgb, last_updated_time
         FROM pks.tiles
-        WHERE group_x = ?
-            AND group_y = ?
-            AND x = ?
-            AND y = ?
+        WHERE group_x = ? AND group_y = ? AND x = ? AND y = ?
         LIMIT 1;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
@@ -70,7 +62,7 @@ async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryErr
     let query = r#"
         SELECT x, y, rgb, placement_time
         FROM pks.placements
-        WHERE day = ?
+        WHERE day = ? AND placement_time < ?
         ORDER BY placement_time DESC;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
@@ -81,15 +73,6 @@ async fn get_tile_group(session: &Session) -> Result<PreparedStatement, QueryErr
         SELECT x, y, rgb
         FROM pks.tiles
         WHERE group_x = ? AND group_y = ?;"#;
-    let prepared: PreparedStatement = session.prepare(query).await?;
-    Ok(prepared)
-}
-
-async fn get_times_placed(session: &Session) -> Result<PreparedStatement, QueryError> {
-    let query = r#"
-        SELECT times_placed
-        FROM pks.stats
-        WHERE ipaddress = ?;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }
@@ -173,11 +156,11 @@ impl QueryStore {
         }
     }
 
-    pub async fn get_placements_in_day(&self, day: i64) -> Result<Vec<Placement>, ServiceError> {
-        info!("Getting placements with day={}", day);
+    pub async fn get_placements(&self, day: i64, epoch_after: Duration) -> Result<Vec<Placement>, ServiceError> {
+        let after_time = CqlTimestamp(epoch_after.as_millis() as i64);
 
         let mut rows_stream = self.session
-            .execute_iter(self.get_placements.clone(), (day, ))
+            .execute_iter(self.get_placements.clone(), (day, after_time))
             .await
             .map_err(|e| ServiceError::map_fatal(e, "when selecting placements"))?
             .rows_stream::<(i32, i32, (i8, i8, i8), CqlTimestamp)>()
@@ -185,13 +168,14 @@ impl QueryStore {
 
         let mut placements = vec![];
         while let Some(row) = rows_stream.next().await {
-            let (x, y, rgb, placement_time) = 
-                row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
+            let (x, y, rgb, placement_time) = row.map_err(|e| ServiceError::map_fatal(e, "while streaming placement rows"))?;
 
             let placement_date = epoch_to_iso_string(placement_time.0)?;
             let rgb = (rgb.0 as u8, rgb.1 as u8, rgb.2 as u8); // cast to from signed integers because scylla can only stored signed integers
             placements.push(Placement { x, y, rgb, placement_date })
         }
+
+        info!("Got placements={:?} with day={} and epoch_after={}", placements, day, epoch_after.as_millis());
         Ok(placements)
     }
 

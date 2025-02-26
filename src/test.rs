@@ -3,7 +3,7 @@ use crate::tests::dict::test_cache;
 use crate::tests::query::test_query;
 use tracing::log::info;
 
-mod backend;
+mod server;
 mod tests;
 
 #[tokio::main]

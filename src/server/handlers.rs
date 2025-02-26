@@ -1,22 +1,23 @@
+use crate::server::models::{DrawEvent, GroupKey, ServiceError};
+use crate::server::service::{draw_tile, get_group, ServerState};
+use crate::server::utils::epoch_to_day;
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Sse};
+use axum::Json;
+use chrono::{DateTime};
+use futures_util::Stream;
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use crate::backend::models::{DrawEvent, GroupKey, ServiceError};
-use axum::extract::{ConnectInfo, Query, State};
-use axum::response::{IntoResponse, Sse};
-use futures_util::Stream;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
-use axum::http::{HeaderMap, StatusCode};
-use axum::http::header::CONTENT_TYPE;
-use axum::Json;
-use axum::response::sse::{Event, KeepAlive};
-use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
-use tracing::{info_span, Instrument};
 use tracing::log::{error, info, warn};
-use crate::backend::service::{draw_tile, get_group, ServerState};
-use crate::backend::utils::epoch_to_day;
+use tracing::{info_span, Instrument};
 
 pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = server.broadcast_tx.subscribe();
@@ -110,7 +111,7 @@ pub async fn handle_post_tile(State(server): State<ServerState>, ConnectInfo(add
     let result = draw_tile(&server, body, ip).instrument(info_span!("Draw tile")).await;
     match result {
         Ok(()) => (StatusCode::OK, [(CONTENT_TYPE, "text/plain")], "Successfully drew the tile".to_string()),
-        Err(ServiceError::Restricted(msg)) => (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], msg),
+        Err(ServiceError::Forbidden(msg)) => (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], msg),
         Err(err) => {
             error!("Failed to draw the tile, event={:?} err={:?}", body, err);
             (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
@@ -136,6 +137,7 @@ pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): St
 #[derive(Debug, Deserialize)]
 pub struct TimeQuery {
     days_ago: Option<i64>,
+    timestamp_after: Option<String>, // RFC 3339 timestamp
 }
 
 pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server): State<ServerState>) -> impl IntoResponse {
@@ -145,6 +147,16 @@ pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server)
     if days_ago < 0 {
         return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Days ago query must be a positive integer".to_string())
     }
+    let epoch_after = match query.timestamp_after {
+        None => Duration::from_secs(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()),
+        Some(time_str) => match DateTime::parse_from_rfc3339(time_str.as_str()) {
+            Ok(date_time) => Duration::from_secs(date_time.timestamp() as u64),
+            Err(err) => {
+                warn!("Failed to parse timestamp_after={} field: {:?}", time_str, err);
+                return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Could not parse timestamp_after field, must be in RFC 3339 timestamp format".to_string())
+            }
+        }
+    };
 
     let duration_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let day_now = epoch_to_day(duration_now);
@@ -154,7 +166,7 @@ pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server)
         return (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], "[]".to_string())
     }
 
-    let result = server.query.get_placements_in_day(day).instrument(info_span!("Get placements")).await;
+    let result = server.query.get_placements(day, epoch_after).instrument(info_span!("Get placements")).await;
     match result {
         Ok(placements) => match serde_json::to_string(&placements) {
             Ok(json) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], json),

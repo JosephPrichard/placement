@@ -1,8 +1,10 @@
+use crate::server::dict::{get_cached_group, set_cached_group, update_placement, upsert_cached_group};
+use crate::server::models::{DrawEvent, GroupKey, TileGroup, GROUP_DIM_I32};
 use deadpool_redis::{Config, Pool, Runtime};
-use crate::backend::dict::{get_cached_group, set_cached_group, upsert_cached_group};
-use crate::backend::models::{DrawEvent, GroupKey, TileGroup, GROUP_DIM_I32};
+use std::time::{Duration, SystemTime};
+use redis::cmd;
 
-async fn test_get_set_cache(redis: &Pool) {
+async fn test_get_set_group(redis: &Pool) {
     let conn = &mut redis.get().await.unwrap();
 
     let mut group1 = TileGroup::empty();
@@ -27,7 +29,7 @@ async fn test_get_set_cache(redis: &Pool) {
     assert_eq!(None, group3);
 }
 
-async fn test_update_cache(redis: &Pool) {
+async fn test_upsert_group(redis: &Pool) {
     let conn = &mut redis.get().await.unwrap();
     
     let mut group1 = TileGroup::empty();
@@ -51,8 +53,20 @@ async fn test_update_cache(redis: &Pool) {
     assert_eq!(Some(group2_expected), group2);
 }
 
-async fn test_redis_lock() {
+async fn test_update_placement(redis: &Pool) {
+    let conn = &mut redis.get().await.unwrap();
 
+    let duration_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+
+    let ret1 = update_placement(conn, "key".to_string(), duration_now, duration_now - Duration::from_secs(60)).await.unwrap();
+    let ret2 = update_placement(conn, "key".to_string(), duration_now, duration_now - Duration::from_secs(60)).await.unwrap();
+
+    let duration_now = duration_now + Duration::from_secs(120);
+    let ret3 = update_placement(conn, "key".to_string(), duration_now, duration_now - Duration::from_secs(60)).await.unwrap();
+    
+    assert_eq!(ret1, -1);
+    assert_ne!(ret2, -1);
+    assert_eq!(ret3, -1);
 }
 
 pub async fn test_cache() {
@@ -60,6 +74,10 @@ pub async fn test_cache() {
     let redis_url = format!("redis://127.0.0.1:{}/", port);
     let redis = Config::from_url(redis_url).create_pool(Some(Runtime::Tokio1)).unwrap();
 
-    test_get_set_cache(&redis).await;
-    test_update_cache(&redis).await;
+    let conn = &mut redis.get().await.unwrap();
+    cmd("FLUSHALL").exec_async(conn).await.unwrap();
+
+    test_get_set_group(&redis).await;
+    test_upsert_group(&redis).await;
+    test_update_placement(&redis).await;
 }

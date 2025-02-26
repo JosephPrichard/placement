@@ -1,11 +1,11 @@
-use crate::backend::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM, GROUP_DIM_I32};
-use crate::backend::query::{create_schema, QueryStore};
+use crate::server::models::{GroupKey, Placement, ServiceError, Tile, TileGroup, GROUP_DIM, GROUP_DIM_I32};
+use crate::server::query::{create_schema, QueryStore};
+use crate::server::utils::epoch_to_day;
 use chrono::{TimeZone, Utc};
 use scylla::SessionBuilder;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, SystemTime};
 use tracing::log::info;
-use crate::backend::utils::epoch_to_day;
 
 async fn init_queries(port: u16) -> QueryStore {
     let session = SessionBuilder::new()
@@ -67,7 +67,7 @@ async fn test_placements(query: &QueryStore) {
     let duration_now = time_now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let day_now = epoch_to_day(duration_now);
 
-    let placements = query.get_placements_in_day(day_now).await.unwrap();
+    let placements = query.get_placements(day_now, duration_now).await.unwrap();
 
     let expected = vec![Placement {
         x: 0,

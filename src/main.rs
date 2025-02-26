@@ -1,19 +1,19 @@
-use crate::backend::broadcast::create_message_subscriber;
-use crate::backend::handlers::{handle_get_group, handle_get_placements, handle_get_tile, handle_post_tile, handle_sse};
+use crate::server::broadcast::create_channel_subscriber;
+use crate::server::handlers::{handle_get_group, handle_get_placements, handle_get_tile, handle_post_tile, handle_sse};
+use crate::server::service::ServerState;
 use axum::routing::{get, post};
 use axum::Router;
-use backend::query::QueryStore;
+use server::query::QueryStore;
+use deadpool_redis::{redis, Config, Runtime};
 use scylla::{Session, SessionBuilder};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use deadpool_redis::{redis, Config, Runtime};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::log::{info, Level};
-use crate::backend::service::ServerState;
 
-mod backend;
+mod server;
 
 async fn init_server(scylla_uri: String, redis_url: String) -> ServerState {
     let session: Session = SessionBuilder::new()
@@ -41,9 +41,9 @@ async fn main() {
     let server = init_server(scylla_uri, redis_url.clone()).await;
 
     let client = redis::Client::open(redis_url).unwrap();
-    let subscriber_handle = create_message_subscriber(client, server.broadcast_tx.clone());
+    let subscriber_handle = create_channel_subscriber(client, server.broadcast_tx.clone());
 
-    let serve_resources = ServeDir::new("./resources").fallback(ServeFile::new("./resources/index.html"));
+    let serve_resources = ServeDir::new("../static").fallback(ServeFile::new("../static/index.html"));
     let router = Router::new()
         .route("/canvas/sse", get(handle_sse))
         .route("/tile", get(handle_get_tile))
@@ -59,6 +59,6 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 
-    info!("Stopped the backend. Shutting down the subscriber task.");
+    info!("Stopped the server. Shutting down the subscriber task.");
     subscriber_handle.abort();
 }

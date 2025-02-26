@@ -1,8 +1,8 @@
+use crate::server::query::{create_schema, QueryStore};
 use scylla::SessionBuilder;
 use tracing::log::info;
-use crate::backend::query::{create_schema, QueryStore};
 
-mod backend;
+mod server;
 
 #[tokio::main]
 async fn main() {
