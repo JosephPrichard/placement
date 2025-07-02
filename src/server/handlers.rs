@@ -64,8 +64,11 @@ pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<It
 
 #[derive(Serialize)]
 pub enum ServiceResp<'a, D: Serialize> {
+    #[serde(rename = "data")]
     Data(D),
+    #[serde(rename = "error")]
     DynError(String),
+    #[serde(rename = "error")]
     StaticError(&'a str),
 }
 

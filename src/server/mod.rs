@@ -5,3 +5,7 @@ pub mod handlers;
 pub mod models;
 pub mod utils;
 pub mod service;
+mod broadcast_test;
+mod handler_test;
+mod query_test;
+mod dict_test;

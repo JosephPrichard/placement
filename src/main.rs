@@ -1,10 +1,7 @@
 use crate::server::broadcast::create_channel_subscriber;
 use crate::server::handlers::app;
-use crate::server::service::{init_server, ServerState};
-use axum::routing::{get, post};
-use axum::Router;
-use deadpool_redis::{redis, Config, Runtime};
-use scylla::{Session, SessionBuilder};
+use crate::server::service::init_server;
+use deadpool_redis::redis;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::log::info;

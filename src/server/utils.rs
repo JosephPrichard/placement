@@ -1,7 +1,7 @@
 use crate::server::models::ServiceError;
 use chrono::LocalResult::Single;
-use chrono::{DateTime, TimeZone, Utc};
-use std::time::{Duration, SystemTime};
+use chrono::{TimeZone, Utc};
+use std::time::Duration;
 use tracing::log::error;
 
 pub fn epoch_to_iso_string(unix_epoch: i64) -> Result<String, ServiceError> {

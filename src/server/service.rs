@@ -20,14 +20,15 @@ pub struct ServerState {
 
 pub async fn init_server(scylla_uri: String, redis_url: String) -> ServerState {
     let session: Session = SessionBuilder::new()
-        .known_node(scylla_uri)
+        .known_node(scylla_uri.as_str())
         .build()
         .await
         .unwrap();
     let query = Arc::new(QueryStore::init_queries(session).await.unwrap());
-    let redis = Config::from_url(redis_url).create_pool(Some(Runtime::Tokio1)).unwrap();
+    let redis = Config::from_url(redis_url.as_str()).create_pool(Some(Runtime::Tokio1)).unwrap();
     let (tx, _) = broadcast::channel(1000);
 
+    info!("Initialized server with redis_url={}, scylla_url={}", redis_url, scylla_uri);
     ServerState { broadcast_tx: tx, query, redis }
 }
 

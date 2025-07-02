@@ -5,7 +5,6 @@ use scylla::batch::Batch;
 use scylla::{frame::value::CqlTimestamp, prepared_statement::PreparedStatement, transport::errors::QueryError, Session};
 use std::time::Duration;
 use std::{net::IpAddr, time::SystemTime};
-use scylla::statement::{Consistency, SerialConsistency};
 use tracing::log::info;
 
 pub async fn create_schema(session: &Session) -> Result<(), QueryError> {
@@ -62,8 +61,8 @@ async fn get_placements(session: &Session) -> Result<PreparedStatement, QueryErr
     let query = r#"
         SELECT x, y, rgb, placement_time
         FROM pks.placements
-        WHERE day = ? AND placement_time < ?
-        ORDER BY placement_time DESC;"#;
+        WHERE day = ? AND placement_time <= ?
+        ORDER BY placement_time ASC;"#;
     let prepared: PreparedStatement = session.prepare(query).await?;
     Ok(prepared)
 }

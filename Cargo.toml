@@ -9,7 +9,7 @@ path = "src/test.rs"
 
 [[bin]]
 name = "create-place-schema"
-path = "src/schema.rs"
+path = "src/scripts.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
@@ -28,3 +28,4 @@ tracing = "0.1.41"
 dotenv = "0.15.0"
 chrono = "0.4.38"
 tower = "0.5.2"
+async-once-cell = "0.5.4"
