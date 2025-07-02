@@ -5,7 +5,6 @@
     <link rel="stylesheet" href="index.css">
     <script src="scripts.js"></script>
     <script>
-        /** @Type {CanvasState} */
         const canvasState = {
             groupMap: new Map(),
             ctx: null,
@@ -13,7 +12,8 @@
             centerY: 0,
         };
 
-        listenCanvas();
+        drawInitialCanvas();
+        startListenCanvas();
     </script>
 </head>
 <body>

@@ -2,14 +2,14 @@ use crate::server::models::{DrawEvent, GroupKey, ServiceError};
 use crate::server::service::{draw_tile, get_group, ServerState};
 use crate::server::utils::epoch_to_day;
 use axum::extract::{ConnectInfo, Query, State};
-use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive};
 use axum::response::{IntoResponse, Sse};
-use axum::Json;
-use chrono::{DateTime};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use chrono::DateTime;
 use futures_util::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddr};
@@ -18,6 +18,16 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::log::{error, info, warn};
 use tracing::{info_span, Instrument};
+
+pub fn app(server: ServerState) -> Router {
+    Router::new()
+        .route("/canvas/sse", get(handle_sse))
+        .route("/tile", get(handle_get_tile))
+        .route("/tile", post(handle_post_tile))
+        .route("/group", get(handle_get_group))
+        .route("/placements", get(handle_get_placements))
+        .with_state(server)
+}
 
 pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = server.broadcast_tx.subscribe();
@@ -52,6 +62,19 @@ pub async fn handle_sse(State(server): State<ServerState>) -> Sse<impl Stream<It
             .text("keep-alive"))
 }
 
+#[derive(Serialize)]
+pub enum ServiceResp<'a, D: Serialize> {
+    Data(D),
+    DynError(String),
+    StaticError(&'a str),
+}
+
+impl<'a, D: Serialize> IntoResponse for ServiceResp<'a, D> {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PointQuery {
     x: i32,
@@ -65,16 +88,16 @@ pub async fn handle_get_tile(Query(query): Query<PointQuery>, State(server): Sta
     match result {
         Ok(tile) => match serde_json::to_string(&tile) {
             Ok(json) =>
-                (StatusCode::OK, [(CONTENT_TYPE, "application/json")], json),
+                (StatusCode::OK, ServiceResp::Data(json)),
             Err(err) => {
                 error!("Error occurred while serializing tile response: {:?}", err);
-                (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, ServiceResp::StaticError("An unexpected error has occurred"))
             }
         },
-        Err(ServiceError::NotFound(str)) => (StatusCode::NOT_FOUND, [(CONTENT_TYPE, "text/plain")], str),
+        Err(ServiceError::NotFound(str)) => (StatusCode::NOT_FOUND, ServiceResp::DynError(str)),
         Err(err) => {
             error!("Error occurred during get one tile operation: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
+            (StatusCode::INTERNAL_SERVER_ERROR, ServiceResp::StaticError("An unexpected error has occurred"))
         }
     }
 }
@@ -105,16 +128,16 @@ pub async fn handle_post_tile(State(server): State<ServerState>, ConnectInfo(add
 
     let ip = match get_ip_address(headers, addr) {
         Ok(ip) => ip,
-        Err(str) => return (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], str.to_string())
+        Err(str) => return (StatusCode::INTERNAL_SERVER_ERROR, ServiceResp::DynError(str.to_string()))
     };
     
     let result = draw_tile(&server, body, ip).instrument(info_span!("Draw tile")).await;
     match result {
-        Ok(()) => (StatusCode::OK, [(CONTENT_TYPE, "text/plain")], "Successfully drew the tile".to_string()),
-        Err(ServiceError::Forbidden(msg)) => (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], msg),
+        Ok(()) => (StatusCode::OK, ServiceResp::Data("Successfully drew the tile".to_string())),
+        Err(ServiceError::Forbidden(msg)) => (StatusCode::BAD_REQUEST, ServiceResp::DynError(msg)),
         Err(err) => {
             error!("Failed to draw the tile, event={:?} err={:?}", body, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
+            (StatusCode::INTERNAL_SERVER_ERROR, ServiceResp::StaticError("An unexpected error has occurred"))
         }
     }
 }
@@ -126,10 +149,10 @@ pub async fn handle_get_group(Query(query): Query<PointQuery>, State(server): St
 
     let result = get_group(&server, key).instrument(info_span!("Get group")).await;
     match result {
-        Ok(buffer) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], buffer),
+        Ok(buffer) => (StatusCode::OK, buffer),
         Err(err) => {
             error!("Failed to get the group for key={:?} err={:?}", key, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".as_bytes().to_vec())
+            (StatusCode::INTERNAL_SERVER_ERROR, "An unexpected error has occurred".as_bytes().to_vec())
         }
     }
 }
@@ -145,7 +168,7 @@ pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server)
 
     let days_ago = query.days_ago.unwrap_or(0);
     if days_ago < 0 {
-        return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Days ago query must be a positive integer".to_string())
+        return (StatusCode::BAD_REQUEST, ServiceResp::StaticError("Days ago query must be a positive integer"))
     }
     let epoch_after = match query.timestamp_after {
         None => Duration::from_secs(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()),
@@ -153,7 +176,7 @@ pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server)
             Ok(date_time) => Duration::from_secs(date_time.timestamp() as u64),
             Err(err) => {
                 warn!("Failed to parse timestamp_after={} field: {:?}", time_str, err);
-                return (StatusCode::BAD_REQUEST, [(CONTENT_TYPE, "text/plain")], "Could not parse timestamp_after field, must be in RFC 3339 timestamp format".to_string())
+                return (StatusCode::BAD_REQUEST, ServiceResp::StaticError("Could not parse timestamp_after field, must be in RFC 3339 timestamp format"))
             }
         }
     };
@@ -163,18 +186,15 @@ pub async fn handle_get_placements(Query(query): Query<TimeQuery>, State(server)
     let day = day_now - days_ago;
 
     if day < 0 {
-        return (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], "[]".to_string())
+        return (StatusCode::OK, ServiceResp::Data(vec![]))
     }
 
     let result = server.query.get_placements(day, epoch_after).instrument(info_span!("Get placements")).await;
     match result {
-        Ok(placements) => match serde_json::to_string(&placements) {
-            Ok(json) => (StatusCode::OK, [(CONTENT_TYPE, "application/octet-stream")], json),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string()),
-        },
+        Ok(placements) => (StatusCode::OK, ServiceResp::Data(placements)),
         Err(err) => {
             error!("Failed to get the placements after day={:?} err={:?}", day, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(CONTENT_TYPE, "text/plain")], "An unexpected error has occurred".to_string())
+            (StatusCode::INTERNAL_SERVER_ERROR, ServiceResp::StaticError("An unexpected error has occurred"))
         }
     }
 }

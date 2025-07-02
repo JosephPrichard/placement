@@ -2,7 +2,8 @@ use crate::server::broadcast::broadcast_message;
 use crate::server::dict::{get_cached_group, get_conn, set_cached_group, update_placement, upsert_cached_group};
 use crate::server::models::{DrawEvent, GroupKey, ServiceError};
 use crate::server::query::QueryStore;
-use deadpool_redis::Pool;
+use deadpool_redis::{Config, Pool, Runtime};
+use scylla::{Session, SessionBuilder};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -15,6 +16,19 @@ pub struct ServerState {
     pub broadcast_tx: broadcast::Sender<DrawEvent>,
     pub redis: Pool,
     pub query: Arc<QueryStore>,
+}
+
+pub async fn init_server(scylla_uri: String, redis_url: String) -> ServerState {
+    let session: Session = SessionBuilder::new()
+        .known_node(scylla_uri)
+        .build()
+        .await
+        .unwrap();
+    let query = Arc::new(QueryStore::init_queries(session).await.unwrap());
+    let redis = Config::from_url(redis_url).create_pool(Some(Runtime::Tokio1)).unwrap();
+    let (tx, _) = broadcast::channel(1000);
+
+    ServerState { broadcast_tx: tx, query, redis }
 }
 
 pub async fn get_group(server: &ServerState, key: GroupKey) -> Result<Vec<u8>, ServiceError> {
@@ -32,29 +46,34 @@ pub async fn get_group(server: &ServerState, key: GroupKey) -> Result<Vec<u8>, S
     Ok(buffer)
 }
 
+const DRAW_PERIOD: Duration = Duration::from_secs(60); // the minimum time between successful draw tile operations for each ipaddress
+
+fn get_remaining_time(placement_epoch: Duration, duration_now: Duration) -> Result<Duration, ServiceError> {
+    if placement_epoch > duration_now {
+        let err = format!("Invariant is false: placement_epoch={:?} is not smaller than duration_now={:?}", placement_epoch, duration_now);
+        error!("{}", err);
+        return Err(ServiceError::Fatal(err));
+    }
+    let difference = duration_now - placement_epoch;
+
+    let remaining = DRAW_PERIOD - difference;
+    if difference > DRAW_PERIOD {
+        let err = format!("Invariant is false: difference={:?} is not smaller than DRAW_PERIOD={:?}", placement_epoch, duration_now);
+        error!("{}", err);
+        return Err(ServiceError::Fatal(err));
+    }
+    Ok(remaining)
+}
+
 pub async fn draw_tile(server: &ServerState, draw: DrawEvent, ip: IpAddr) -> Result<(), ServiceError> {
-    static DRAW_PERIOD: Duration = Duration::from_secs(60); // the minimum time between successful draw tile operations for each ipaddress
-    
     let duration_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 
     let conn = &mut get_conn(&server.redis).await?;
-    let ret = update_placement(conn, ip.to_string(), duration_now, duration_now - Duration::from_secs(60)).await?;
-    
-    if ret != -1 {
+    let ret = update_placement(conn, ip.to_string(), duration_now, duration_now - DRAW_PERIOD).await?;
+
+    if ret >= 0 {
         let placement_epoch = Duration::from_millis(ret as u64);
-        if placement_epoch > duration_now {
-            let err = format!("Invariant is false: placement_epoch={:?} is not smaller than duration_now={:?}", placement_epoch, duration_now);
-            error!("{}", err);
-            return Err(ServiceError::Fatal(err));
-        }
-        let difference = duration_now - placement_epoch;
-        
-        let remaining = DRAW_PERIOD - difference;
-        if difference > DRAW_PERIOD {
-            let err = format!("Invariant is false: difference={:?} is not smaller than DRAW_PERIOD={:?}", placement_epoch, duration_now);
-            error!("{}", err);
-            return Err(ServiceError::Fatal(err));
-        }
+        let remaining = get_remaining_time(placement_epoch, duration_now)?;
         
         let time_str = format!("{:02}:{:02}", remaining.as_secs() / 60,  remaining.as_secs() % 60);
     

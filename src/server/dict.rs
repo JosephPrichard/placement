@@ -17,7 +17,6 @@ pub async fn set_cached_group(conn: &mut Connection, key: GroupKey, group: &Tile
         .map_err(|e| ServiceError::map_fatal(e, "while setting tile group in cache"))?;
     
     info!("Set tile group with key={:?} into the cache", key);
-    
     Ok(())
 }
 
@@ -40,7 +39,7 @@ pub async fn get_cached_group(conn: &mut Connection, key: GroupKey) -> Result<Op
 }
 
 pub async fn init_cached_group(conn: &mut Connection, key: &str) -> Result<(), ServiceError> {
-    static SCRIPT: &str = include_str!("../scripts/ZEROINIT.lua");
+    static SCRIPT: &str = include_str!("../redis/ZEROINIT.lua");
     
     // set a byte array of zeros if the buffer has not been initialized yet
     let script = redis::Script::new(SCRIPT);
@@ -77,7 +76,7 @@ pub async fn upsert_cached_group(conn: &mut Connection, draw: DrawEvent) -> Resu
 }
 
 pub async fn update_placement(conn: &mut Connection, key: String, duration_now: Duration, duration_then: Duration) -> Result<i128, ServiceError> {
-    static SCRIPT: &str = include_str!("../scripts/UPDATELT.lua");
+    static SCRIPT: &str = include_str!("../redis/UPDATELT.lua");
     
     let script = redis::Script::new(SCRIPT);
     let ret: i128 =  script.arg(&key)

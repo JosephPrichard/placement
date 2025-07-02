@@ -1,8 +1,8 @@
 use crate::server::dict::{get_cached_group, set_cached_group, update_placement, upsert_cached_group};
 use crate::server::models::{DrawEvent, GroupKey, TileGroup, GROUP_DIM_I32};
 use deadpool_redis::{Config, Pool, Runtime};
-use std::time::{Duration, SystemTime};
 use redis::cmd;
+use std::time::{Duration, SystemTime};
 
 async fn test_get_set_group(redis: &Pool) {
     let conn = &mut redis.get().await.unwrap();
@@ -38,13 +38,13 @@ async fn test_upsert_group(redis: &Pool) {
 
     set_cached_group(conn, GroupKey(0, 0), &group1).await.unwrap();
     upsert_cached_group(conn, DrawEvent { x: 3, y: 3, rgb: (2, 2, 2) }).await.unwrap(); // this will update group 1
-    upsert_cached_group(conn, DrawEvent { x: GROUP_DIM_I32 + 3, y: GROUP_DIM_I32 * 2, rgb: (3, 3, 3) }).await.unwrap(); // this will create then update group 2
+    upsert_cached_group(conn, DrawEvent { x: GROUP_DIM_I32 + 15, y: GROUP_DIM_I32 * 2, rgb: (3, 3, 3) }).await.unwrap(); // this will create then update group 2
 
     let mut group1_expected = group1.clone();
     group1_expected.set(3, 3, (2, 2, 2));
 
     let mut group2_expected = TileGroup::empty();
-    group2_expected.set(3, 0, (3, 3, 3));
+    group2_expected.set(15, 0, (3, 3, 3));
 
     let group1 = get_cached_group(conn, GroupKey(0, 0)).await.unwrap();
     let group2 = get_cached_group(conn, GroupKey(GROUP_DIM_I32, GROUP_DIM_I32 * 2)).await.unwrap();

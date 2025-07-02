@@ -1,18 +1,18 @@
-/**
- * @typedef {object} CanvasState
- * @property {Map<string, Uint8Array | 0>} groupMap
- * @property {CanvasRenderingContext2D} ctx
- * @property {number} centerX
- * @property {number} centerY
- */
-
 const GROUP_DIM = 100;
 
-/**
- * @param group {Uint8Array}
- * @param canvas {CanvasState}
- */
+function drawInitialCanvas() {
+    const canvas = document.getElementById("canvas");
+}
+
+function drawTile(canvas, x, y, rgb) {
+
+}
+
 function drawGroupToCanvas(canvas, group) {
+    if (group.length === 0) {
+        return;
+    }
+
     for (let x  = 0; x < GROUP_DIM; x++) {
         for (let y  = 0; y < GROUP_DIM; y++) {
             const offset = (y * 3 * GROUP_DIM) + (x * 3)
@@ -23,17 +23,11 @@ function drawGroupToCanvas(canvas, group) {
             const g = group[o1];
             const b = group[o2];
 
-            canvas.ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-            // state.ctx.fillRect();
+            drawTile(canvas, x, y, [r, g, b])
         }
     }
 }
 
-/**
- * @param canvas {CanvasState}
- * @param x {number}
- * @param y {number}
- */
 function drawGroup(canvas, x, y) {
     const key = `${x},${y}`;
     const group = canvas.groupMap.get(key);
@@ -44,8 +38,10 @@ function drawGroup(canvas, x, y) {
                 if (resp instanceof Uint8Array) {
                     canvas.groupMap.set(key, resp);
                     drawGroupToCanvas(canvas, resp);
-                } else {
+                } else if (resp instanceof String) {
 
+                } else {
+                    console.error("Expected resp to get Uint8Array or String, got ", typeof resp);
                 }
             })
     } else if (group instanceof Uint8Array) {
@@ -55,12 +51,27 @@ function drawGroup(canvas, x, y) {
     }
 }
 
-function listenCanvas() {
+function updateGroup(canvas, draw) {
+    const key = `${draw.x},${draw.y}`;
+    const group = canvas.groupMap.get(key);
+
+    const offset = (draw.y * 3 * GROUP_DIM) + (draw.x * 3)
+    const o1 = offset + 1;
+    const o2 = offset + 2;
+
+    group[offset] = draw.rgb[0];
+    group[o1] = draw.rgb[1];
+    group[o2] = draw.rgb[2];
+}
+
+function startListenCanvas(canvas) {
     const source = new EventSource("/canvas/sse");
 
     source.onmessage = function (event) {
         if (event.data !== "keep-alive") {
             const draw = JSON.parse(event.data);
+            updateGroup(canvas, draw);
+            drawTile(canvas, draw.x, draw.y, draw.rgb);
         }
     };
 
@@ -72,19 +83,6 @@ function listenCanvas() {
 
 const URL = "http://localhost:3000";
 
-/**
- * @typedef {object} Tile
- * @property {number} x
- * @property {number} y
- * @property {number[]} rgb
- * @property {string} date
- */
-
-/**
- * @param x {number}
- * @param y {number}
- * @return {Promise<Tile | string>}
- */
 async function getTile(x, y) {
     try {
         const resp = await fetch(`${URL}/tile?x=${x}&y=${y}`, { method: "GET" })
@@ -101,17 +99,6 @@ async function getTile(x, y) {
     }
 }
 
-/**
- * @typedef {object} DrawEvent
- * @property {number} x
- * @property {number} y
- * @property {number[]} rgb
- */
-
-/**
- * @param draw {DrawEvent}
- * @return {Promise<string | 0>}
- */
 async function postTile(draw) {
     try {
         const resp = await fetch(`${URL}/tile`, { method: "POST", body: JSON.stringify(draw) })
@@ -130,11 +117,6 @@ async function postTile(draw) {
     }
 }
 
-/**
- * @param x {number}
- * @param y {number}
- * @return {Promise<Uint8Array | string>}
- */
 async function getGroup(x, y) {
     try {
         const resp = await fetch(`${URL}/group?x=${x}&y=${y}`, { method: "GET" })
