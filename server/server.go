@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,11 @@ func WriteFatalError(w http.ResponseWriter) {
 	WriteError(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
 
+func WithSideChannels(r *http.Request) context.Context {
+	trace := r.Header.Get("trace")
+	return context.WithValue(r.Context(), "trace", trace)
+}
+
 type Point struct {
 	x int
 	y int
@@ -73,7 +79,7 @@ func parsePoint(url *url.URL) (Point, error) {
 }
 
 func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := WithSideChannels(r)
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
@@ -100,7 +106,7 @@ func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := WithSideChannels(r)
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
@@ -139,7 +145,7 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := WithSideChannels(r)
 
 	query := r.URL.Query()
 	daysAgoStr := query.Get("daysAgo")
@@ -206,7 +212,7 @@ func getIpAddr(r *http.Request) net.IP {
 }
 
 func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := WithSideChannels(r)
 
 	var draw Draw
 	if err := json.NewDecoder(r.Body).Decode(&draw); err != nil {
@@ -267,7 +273,8 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	trace := ctx.Value("trace")
+
+	trace := r.Header.Get("trace")
 	sseId := uuid.New()
 
 	subChan := make(chan Draw)
