@@ -6,19 +6,19 @@ const GroupDim = 100
 const GroupLen = GroupDim * GroupDim * 3
 
 type GroupKey struct {
-	x int32
-	y int32
+	x int
+	y int
 }
 
-func KeyFromPoint(x int32, y int32) GroupKey {
+func KeyFromPoint(x int, y int) GroupKey {
 	groupFromX := (x / GroupDim) * GroupDim
 	groupFromY := (y / GroupDim) * GroupDim
 	return GroupKey{x: groupFromX, y: groupFromY}
 }
 
 type Draw struct {
-	x   int32
-	y   int32
+	x   int
+	y   int
 	rgb color.RGBA
 }
 
@@ -29,11 +29,11 @@ type Tile struct {
 
 type TileGroup []byte
 
-func GetTgOffset(x, y int32) int32 {
+func GetTgOffset(x, y int) int {
 	return (y * 3 * GroupDim) + (x * 3)
 }
 
-func (t TileGroup) SetTile(x, y int32, rgb color.RGBA) TileGroup {
+func (t TileGroup) SetTile(x, y int, rgb color.RGBA) TileGroup {
 	tg := t
 	if len(tg) == 0 {
 		tg = make([]byte, GroupLen)

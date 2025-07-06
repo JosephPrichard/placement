@@ -11,6 +11,8 @@ import (
 )
 
 func GetTileGroup(ctx context.Context, session *gocql.Session, key GroupKey) (TileGroup, error) {
+	trace := ctx.Value("trace")
+
 	query := session.Query("SELECT x, y, rgb FROM pks.tiles WHERE group_x = ? AND group_y = ?").
 		Idempotent(true).
 		Bind(key.x, key.y)
@@ -20,11 +22,11 @@ func GetTileGroup(ctx context.Context, session *gocql.Session, key GroupKey) (Ti
 	group := TileGroup{}
 
 	for scanner.Next() {
-		var x, y int32
+		var x, y int
 		var rgb color.RGBA
 
 		if err := scanner.Scan(&x, &y, &rgb.R, &rgb.G, &rgb.B); err != nil {
-			log.Err(err).Msg("Error while scanning row of GetTileGroup")
+			log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetTileGroup")
 		}
 
 		xOff := x - key.x
@@ -39,27 +41,33 @@ func GetTileGroup(ctx context.Context, session *gocql.Session, key GroupKey) (Ti
 		group = group.SetTile(xOff, yOff, rgb)
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Msg("Error while scanning results of GetTileGroup")
+		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetTileGroup")
 		return nil, err
 	}
 
-	log.Info().Type("key", key).Msg("Selected TileGroup")
+	log.Info().Any("trace", trace).Type("key", key).Msg("Selected TileGroup")
 	return group, nil
 }
 
-func scanPlacement(scanner gocql.Scanner) Tile {
+func scanPlacement(ctx context.Context, scanner gocql.Scanner) Tile {
+	trace := ctx.Value("trace")
+
 	var placement Tile
 
 	var lastUpdatedTime time.Time
 	if err := scanner.Scan(&placement.d.x, &placement.d.y, &placement.d.rgb.R, &placement.d.rgb.G, &placement.d.rgb.B, &lastUpdatedTime); err != nil {
-		log.Err(err).Msg("Error while scanning row of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetOneTile")
 	}
 	placement.date = lastUpdatedTime.String()
 
 	return placement
 }
 
-func GetOneTile(ctx context.Context, session *gocql.Session, x, y int32) (Tile, error) {
+var TileNotFoundError = errors.New("tile not found")
+
+func GetOneTile(ctx context.Context, session *gocql.Session, x, y int) (Tile, error) {
+	trace := ctx.Value("trace")
+
 	key := KeyFromPoint(x, y)
 
 	query := session.Query("SELECT x, y, rgb, last_updated_time FROM pks.tiles WHERE group_x = ? AND group_y = ? AND x = ? AND y = ? LIMIT 1;").
@@ -71,47 +79,53 @@ func GetOneTile(ctx context.Context, session *gocql.Session, x, y int32) (Tile, 
 	var tile Tile
 
 	if scanner.Next() {
-		tile = scanPlacement(scanner)
+		tile = scanPlacement(ctx, scanner)
 	} else {
-		log.Warn().Msg("Error while scanning results of GetOneTile, expected to retrieve one row, got none")
-		return Tile{}, errors.New("expected GetOneTile results to have one result, got none")
+		log.Warn().Any("trace", trace).Msg("Error while scanning results of GetOneTile, expected to retrieve one row, got none")
+		return Tile{}, TileNotFoundError
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Msg("Error while scanning results of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetOneTile")
 		return Tile{}, err
 	}
 
 	log.Info().
-		Type("key", key).Int32("x", x).Int32("y", y).Type("tile", tile).
+		Any("trace", trace).
+		Type("key", key).Int("x", x).Int("y", y).Type("tile", tile).
 		Msg("Selected OneTile")
 	return tile, nil
 }
 
-func GetTiles(ctx context.Context, session *gocql.Session, day int64, after time.Duration) ([]Tile, error) {
+func GetTiles(ctx context.Context, session *gocql.Session, day int64, after time.Time) ([]Tile, error) {
+	trace := ctx.Value("trace")
+
 	query := session.Query("SELECT x, y, rgb, placement_time FROM pks.placements WHERE day = ? AND placement_time <= ? ORDER BY placement_time ASC;").
 		Idempotent(true).
-		Bind(day, after.Milliseconds())
+		Bind(day, after)
 
 	scanner := query.IterContext(ctx).Scanner()
 
 	var tiles []Tile
 
 	for scanner.Next() {
-		tile := scanPlacement(scanner)
+		tile := scanPlacement(ctx, scanner)
 		tiles = append(tiles, tile)
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Msg("Error while scanning results of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetOneTile")
 		return nil, err
 	}
 
 	log.Info().
-		Type("day", day).Dur("after", after).Type("tiles", tiles).
+		Any("trace", trace).
+		Type("day", day).Time("after", after).Type("tiles", tiles).
 		Msg("Selected Tiles")
 	return tiles, nil
 }
 
-func BatchUpsertTile(ctx context.Context, session *gocql.Session, x, y int32, rgb color.RGBA, ip net.IP, placementTime time.Time) error {
+func BatchUpsertTile(ctx context.Context, session *gocql.Session, x, y int, rgb color.RGBA, ip net.IP, placementTime time.Time) error {
+	trace := ctx.Value("trace")
+
 	key := KeyFromPoint(x, y)
 
 	day := placementTime.Day()
@@ -130,7 +144,10 @@ func BatchUpsertTile(ctx context.Context, session *gocql.Session, x, y int32, rg
 	}
 
 	log.Info().
-		Type("day", day).Int32("x", x).Int32("y", y).Type("key", key).Type("rgb", rgb).Type("ip", ip).Time("placement_time", placementTime).
-		Msg("Executed tile upsert batch")
+		Any("trace", trace).
+		Type("key", key).
+		Int("x", x).Int("y", y).Type("rgb", rgb).
+		Type("ip", ip).Time("placementTime", placementTime).Type("day", day).
+		Msg("Executed BatchUpsertTile")
 	return nil
 }

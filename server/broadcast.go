@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/go-redis/redis"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 	"image/color"
@@ -10,7 +11,7 @@ import (
 
 const DrawChannel = "draw-events"
 
-func ListenPubSub(rdb redis.Client, drawChan chan Draw) {
+func ListenBroadcast(rdb *redis.Client, eventChan chan Draw) {
 	pubSub := rdb.Subscribe(DrawChannel)
 	defer func() {
 		if err := pubSub.Close(); err != nil {
@@ -24,31 +25,31 @@ func ListenPubSub(rdb redis.Client, drawChan chan Draw) {
 			Str("channel", m.Channel).Str("message", m.String()).
 			Msg("Received a message on channel")
 
-		var d pb.Draw
-		err := proto.Unmarshal([]byte(m.Payload), &d)
+		var e pb.Event
+		err := proto.Unmarshal([]byte(m.Payload), &e)
 		if err != nil {
 			log.Err(err).Msg("Error while deserializing a message from channel")
 			continue
 		}
 
-		drawChan <- Draw{
-			x:   d.X,
-			y:   d.Y,
-			rgb: color.RGBA{R: uint8(d.R), G: uint8(d.G), B: uint8(d.B), A: 255},
+		eventChan <- Draw{
+			x:   int(e.Draw.X),
+			y:   int(e.Draw.Y),
+			rgb: color.RGBA{R: uint8(e.Draw.R), G: uint8(e.Draw.G), B: uint8(e.Draw.B), A: 255},
 		}
 	}
 }
 
 type Subscriber struct {
-	id      int64
+	id      uuid.UUID
 	subChan chan Draw
 }
 
-func HandleDrawEvent(drawChan chan Draw, subChan chan Subscriber) {
+func MuxDrawChannels(eventChan chan Draw, subChan chan Subscriber) {
 	var subscribers []Subscriber
 	for {
 		select {
-		case draw := <-drawChan:
+		case draw := <-eventChan:
 			for _, subscriber := range subscribers {
 				subscriber.subChan <- draw
 			}
@@ -58,19 +59,21 @@ func HandleDrawEvent(drawChan chan Draw, subChan chan Subscriber) {
 		case sub := <-subChan:
 			subscribers = append(subscribers, sub)
 			log.Info().
-				Int64("id", sub.id).
+				Uint32("id", sub.id.ID()).
 				Msg("Appended a subscriber")
 		}
 	}
 }
 
 func BroadcastDraw(rdb *redis.Client, draw Draw) error {
-	payload, err := proto.Marshal(&pb.Draw{
-		X: draw.x,
-		Y: draw.y,
-		R: int32(draw.rgb.R),
-		G: int32(draw.rgb.G),
-		B: int32(draw.rgb.B),
+	payload, err := proto.Marshal(&pb.Event{
+		Draw: &pb.Draw{
+			X: int32(draw.x),
+			Y: int32(draw.y),
+			R: int32(draw.rgb.R),
+			G: int32(draw.rgb.G),
+			B: int32(draw.rgb.B),
+		},
 	})
 	if err != nil {
 		log.Err(err).Msg("Failed to serialize Draw message")
