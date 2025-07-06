@@ -1,4 +1,6 @@
--- @ARGS keys string, len number
+-- @ARGS
+-- key string - the key to initialize the array at
+-- len number - the length of the array to initialize with zeros
 -- @RETURNS 1 if a WRITE happens and 0 otherwise
 
 -- initializes a key with an array of all zeros if it hasn't been set yet

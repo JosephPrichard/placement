@@ -15,9 +15,13 @@ REDIS_URL=redis://127.0.0.1:6380/
 
 Run Docker Compose
 
+`export PATH="$PATH:$(go env GOPATH)/bin"`
+
+`protoc --go_out=. --go_opt=paths=source_relative pb/placement.proto`
+
 `docker compose up`
 
-`cargo run --package place --bin place`
+`go run main.go`
 
 ## Scripts
 
@@ -25,7 +29,7 @@ Create Scylla Schema
 
 `docker compose up`
 
-`cargo run --package place --bin place`
+`go run main.go --scripts`
 
 ## Testing
 
@@ -37,4 +41,4 @@ Run Docker Compose
 
 ^This step is important to initialize the scylla instance
 
-`cargo run --package place --bin test-place`
+`go test ./...`
