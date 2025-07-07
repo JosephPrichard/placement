@@ -21,7 +21,7 @@ var zeroInit = redis.NewScript(zeroInitScript)
 func SetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey, group TileGroup) error {
 	trace := ctx.Value("trace")
 
-	keyStr := fmt.Sprintf("(%d,%d)", key.x, key.y)
+	keyStr := fmt.Sprintf("(%d,%d)", key.X, key.Y)
 
 	err := rdb.Set(keyStr, string(group), 0).Err()
 	if err != nil {
@@ -40,7 +40,7 @@ func SetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey, group 
 func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileGroup, error) {
 	trace := ctx.Value("trace")
 
-	keyStr := fmt.Sprintf("(%d,%d)", key.x, key.y)
+	keyStr := fmt.Sprintf("(%d,%d)", key.X, key.Y)
 
 	value, err := rdb.Get(keyStr).Result()
 	if err != nil {
@@ -58,7 +58,7 @@ func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileG
 		log.Warn().
 			Any("trace", trace).Str("key", keyStr).Int("len", len(value)).
 			Msg("Failed to get tile group from cache")
-		return nil, fmt.Errorf("internal service error: invalid cached group length")
+		return nil, fmt.Errorf("internal service Error: invalid cached group length")
 	}
 
 	return []byte(value), nil
@@ -84,16 +84,16 @@ func InitCachedGroup(ctx context.Context, rdb *redis.Client, key string) error {
 func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 	trace := ctx.Value("trace")
 
-	key := KeyFromPoint(d.x, d.y)
-	keyStr := fmt.Sprintf("(%d,%d)", d.x, d.y)
+	key := KeyFromPoint(d.X, d.Y)
+	keyStr := fmt.Sprintf("(%d,%d)", d.X, d.Y)
 
 	err := InitCachedGroup(ctx, rdb, keyStr)
 	if err != nil {
 		return err
 	}
 
-	xOff := d.x - key.x
-	yOff := d.y - key.y
+	xOff := d.X - key.X
+	yOff := d.Y - key.Y
 	if xOff < 0 {
 		xOff = 0
 	}
@@ -102,7 +102,7 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 	}
 
 	byteOff := GetTgOffset(xOff, yOff)
-	rgbBytes := []byte{d.rgb.R, d.rgb.G, d.rgb.B}
+	rgbBytes := []byte{d.Rgb.R, d.Rgb.G, d.Rgb.B}
 
 	_, err = rdb.SetRange(keyStr, int64(byteOff), string(rgbBytes)).Result()
 	if err != nil {

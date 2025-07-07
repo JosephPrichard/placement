@@ -19,7 +19,7 @@ services:
       - "9142:9142"  # Scylla monitoring port
     volumes:
       - scylla-data:/var/server/scylla
-  keydb:
-    image: eqalpha/keydb
+  redis:
+    image: redis/redis-stack-server
     ports:
       - "6380:6379"

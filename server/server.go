@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/go-redis/redis"
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 	"net"
 	"net/http"
@@ -25,37 +26,6 @@ type State struct {
 	SubChan   chan Subscriber
 }
 
-type ServiceError struct {
-	msg  string
-	code int
-}
-
-func WriteError(w http.ResponseWriter, msg string, code int) {
-	log.Error().
-		Str("error", msg).Int("code", code).
-		Msg("Writing error response")
-
-	errResp := ServiceError{
-		msg:  msg,
-		code: code,
-	}
-
-	if err := json.NewEncoder(w).Encode(errResp); err != nil {
-		log.Panic().Msg(err.Error())
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusInternalServerError)
-}
-
-func WriteFatalError(w http.ResponseWriter) {
-	WriteError(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-}
-
-func WithSideChannels(r *http.Request) context.Context {
-	trace := r.Header.Get("trace")
-	return context.WithValue(r.Context(), "trace", trace)
-}
-
 type Point struct {
 	x int
 	y int
@@ -63,12 +33,12 @@ type Point struct {
 
 func parsePoint(url *url.URL) (Point, error) {
 	query := url.Query()
-	xStr := query.Get("x")
+	xStr := query.Get("X")
 	yStr := query.Get("y")
 
 	x, err := strconv.Atoi(xStr)
 	if err != nil {
-		return Point{}, fmt.Errorf("x must be an integer, got %s", xStr)
+		return Point{}, fmt.Errorf("X must be an integer, got %s", xStr)
 	}
 	y, err := strconv.Atoi(yStr)
 	if err != nil {
@@ -79,56 +49,58 @@ func parsePoint(url *url.URL) (Point, error) {
 }
 
 func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := WithSideChannels(r)
+	ctx := r.Context()
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
-		WriteError(w, err.Error(), http.StatusBadRequest)
+		ErrorCode(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	log.Info().
+		Any("trace", ctx.Value("trace")).Type("point", point).
+		Msg("Handling GetTile")
 
 	tile, err := GetOneTile(ctx, state.Cassandra, point.x, point.y)
 	if errors.Is(err, TileNotFoundError) {
-		WriteError(w, err.Error(), http.StatusNotFound)
+		Error(w, r, err)
 		return
 	}
 	if err != nil {
-		WriteFatalError(w)
+		Error(w, r, err)
 		return
 	}
 
-	if err = json.NewEncoder(w).Encode(tile); err != nil {
-		WriteFatalError(w)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(tile)
 }
 
 func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := WithSideChannels(r)
+	ctx := r.Context()
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
-		WriteError(w, err.Error(), http.StatusBadRequest)
+		Error(w, r, err)
 		return
 	}
+	key := GroupKey{X: point.x, Y: point.y}
 
-	key := GroupKey{x: point.x, y: point.y}
+	log.Info().
+		Any("trace", ctx.Value("trace")).Type("point", point).Type("key", key).
+		Msg("Handling GetGroup")
+
 	var tg TileGroup
-
-	tg, err = GetCachedGroup(ctx, state.Rdb, key)
-	if err != nil {
-		WriteFatalError(w)
+	if tg, err = GetCachedGroup(ctx, state.Rdb, key); err != nil {
+		Error(w, r, err)
 		return
 	}
 	if tg == nil {
-		tg, err = GetTileGroup(ctx, state.Cassandra, key)
-		if err != nil {
-			WriteFatalError(w)
+		if tg, err = GetTileGroup(ctx, state.Cassandra, key); err != nil {
+			Error(w, r, err)
 			return
 		}
-
 		go func() {
 			if err = SetCachedGroup(ctx, state.Rdb, key, tg); err != nil {
 				log.Err(err).Msg("failed SetCachedGroup in background task")
@@ -136,59 +108,56 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	if _, err = w.Write(tg); err != nil {
-		WriteFatalError(w)
-		return
-	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(tg)
 }
 
 func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := WithSideChannels(r)
+	ctx := r.Context()
 
 	query := r.URL.Query()
-	daysAgoStr := query.Get("daysAgo")
+	daysStr := query.Get("days")
 	afterStr := query.Get("after")
 
-	var daysAgo int
-	var after time.Time
+	log.Info().
+		Any("trace", ctx.Value("trace")).Str("days", daysStr).Str("after", afterStr).
+		Msg("Handling GetPlacements")
 
+	var days int
+	var after time.Time
 	var err error
-	if daysAgoStr != "" {
-		daysAgo, err = strconv.Atoi(daysAgoStr)
-		if err != nil {
-			WriteError(w, fmt.Sprintf("daysAgo must be an integer, got %s", daysAgoStr), http.StatusBadRequest)
+
+	if daysStr != "" {
+		if days, err = strconv.Atoi(daysStr); err != nil {
+			ErrorCode(w, r, fmt.Sprintf("days must be an integer, got %s", daysStr), http.StatusBadRequest)
 			return
 		}
 	}
-	if afterStr == "" {
-		after = time.Now().Add(DrawPeriod)
-	} else {
-		after, err = time.Parse(time.RFC3339, afterStr)
-		if err != nil {
-			WriteError(w, fmt.Sprintf("after must be a valid RFC3339 timestamp, got %s", daysAgoStr), http.StatusBadRequest)
+	if afterStr != "" {
+		if after, err = time.Parse(time.RFC3339, afterStr); err != nil {
+			ErrorCode(w, r, fmt.Sprintf("after must be a valid RFC3339 timestamp, got %s", daysStr), http.StatusBadRequest)
 			return
 		}
+	} else {
+		after = time.Now()
 	}
 
 	var tiles []Tile
-	if daysAgo <= 0 || after.IsZero() {
+	if days <= 0 || after.IsZero() {
 		tiles = make([]Tile, 0)
 	} else {
-		tiles, err = GetTiles(ctx, state.Cassandra, int64(daysAgo), after)
-		if err != nil {
-			WriteFatalError(w)
+		if tiles, err = GetTiles(ctx, state.Cassandra, int64(days), after); err != nil {
+			Error(w, r, err)
 			return
 		}
 	}
 
-	if err = json.NewEncoder(w).Encode(tiles); err != nil {
-		WriteFatalError(w)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(tiles)
 }
 
 func getIpAddr(r *http.Request) net.IP {
@@ -212,24 +181,28 @@ func getIpAddr(r *http.Request) net.IP {
 }
 
 func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
-	ctx := WithSideChannels(r)
+	ctx := r.Context()
 
 	var draw Draw
 	if err := json.NewDecoder(r.Body).Decode(&draw); err != nil {
-		WriteFatalError(w)
+		ErrorCode(w, r, "Failed to deserialize response, expected Draw", http.StatusBadRequest)
+		return
+	}
+
+	log.Info().
+		Any("trace", ctx.Value("trace")).Type("draw", draw).
+		Msg("Handling PostTile")
+
+	ip := getIpAddr(r)
+	if ip == nil {
+		ErrorCode(w, r, fmt.Sprintf("ip must be a valid IP address"), http.StatusBadRequest)
 		return
 	}
 
 	now := time.Now()
-	ip := getIpAddr(r)
-	if ip == nil {
-		WriteError(w, fmt.Sprintf("ip must be a valid IP address"), http.StatusBadRequest)
-		return
-	}
-
 	ret, err := AcquireExpiringLock(ctx, state.Rdb, ip.String(), now, now.Add(-DrawPeriod), DrawPeriod)
 	if err != nil {
-		WriteFatalError(w)
+		Error(w, r, err)
 		return
 	}
 
@@ -237,18 +210,20 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 		timePlaced := time.Unix(ret, 0)
 		difference := now.Sub(timePlaced)
 		remaining := DrawPeriod - difference
-
-		WriteError(w, fmt.Sprintf("%d minutes remaining until player can draw another tile", int64(remaining.Minutes())), http.StatusUnauthorized)
+		if remaining < 0 || timePlaced.After(now) {
+			ErrorCode(w, r, fmt.Sprintf("invariant is false: remaining=%d must be larger than 0 and timePlaced=%v must be before now=%v", remaining, timePlaced, now), http.StatusInternalServerError)
+			return
+		}
+		ErrorCode(w, r, fmt.Sprintf("%d minutes remaining until player can draw another tile", int64(remaining.Minutes())), http.StatusUnauthorized)
 		return
 	}
 
-	err = UpsertCachedGroup(ctx, state.Rdb, draw)
-	if err != nil {
-		WriteFatalError(w)
+	if err = UpsertCachedGroup(ctx, state.Rdb, draw); err != nil {
+		Error(w, r, err)
 		return
 	}
 	go func() {
-		if err := BatchUpsertTile(ctx, state.Cassandra, draw.x, draw.y, draw.rgb, ip, now); err != nil {
+		if err := BatchUpsertTile(ctx, state.Cassandra, draw.X, draw.Y, draw.Rgb, ip, now); err != nil {
 			log.Err(err).Msg("BatchUpsertTile failed in background task")
 		}
 	}()
@@ -286,38 +261,52 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
 			log.Info().Type("trace", trace).Msg("Client disconnected from sse")
 			return
 		case draw := <-subChan:
-			if err := json.NewEncoder(w).Encode(draw); err != nil {
-				WriteFatalError(w)
-				return
-			}
+			_ = json.NewEncoder(w).Encode(draw)
 			flusher.Flush()
 		}
 	}
 }
 
-func HandleServer(state State) http.Handler {
+func SideChannelMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Info().
-			Str("method", r.Method).Str("url", r.URL.String()).
-			Msg("Received an http request")
-
-		switch r.Method {
-		case "GET":
-			switch r.URL.Path {
-			case "/placements":
-				HandleGetPlacements(state, w, r)
-			case "/tile":
-				HandleGetTile(state, w, r)
-			case "/group":
-				HandleGetGroup(state, w, r)
-			case "/draw/events":
-				HandleDrawEvents(state, w, r)
-			}
-		case "POST":
-			switch r.URL.Path {
-			case "/tile":
-				HandlePostTile(state, w, r)
-			}
+		trace := r.Header.Get("trace")
+		if trace == "" {
+			trace = uuid.NewString()
 		}
+		ctx := context.WithValue(r.Context(), "trace", trace)
+		r = r.WithContext(ctx)
+
+		log.Info().
+			Any("trace", r.Context().Value("trace")).Str("url", r.URL.String()).
+			Msg("Handling an http request")
+
+		next.ServeHTTP(w, r)
 	})
+}
+
+func HandleServer(state State) http.Handler {
+	r := mux.NewRouter()
+
+	r.Use(SideChannelMiddleware)
+
+	get := r.Methods(http.MethodGet).Subrouter()
+	get.HandleFunc("/placements", func(w http.ResponseWriter, r *http.Request) {
+		HandleGetPlacements(state, w, r)
+	})
+	get.HandleFunc("/tile", func(w http.ResponseWriter, r *http.Request) {
+		HandleGetTile(state, w, r)
+	})
+	get.HandleFunc("/group", func(w http.ResponseWriter, r *http.Request) {
+		HandleGetGroup(state, w, r)
+	})
+	get.HandleFunc("/draw/events", func(w http.ResponseWriter, r *http.Request) {
+		HandleDrawEvents(state, w, r)
+	})
+
+	post := r.Methods(http.MethodPost).Subrouter()
+	post.HandleFunc("/tile", func(w http.ResponseWriter, r *http.Request) {
+		HandlePostTile(state, w, r)
+	})
+
+	return r
 }

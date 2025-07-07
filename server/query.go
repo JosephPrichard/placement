@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"errors"
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/gocql/gocql"
 	"github.com/rs/zerolog/log"
 	"image/color"
 	"net"
@@ -13,11 +13,12 @@ import (
 func GetTileGroup(ctx context.Context, session *gocql.Session, key GroupKey) (TileGroup, error) {
 	trace := ctx.Value("trace")
 
-	query := session.Query("SELECT x, y, rgb FROM pks.tiles WHERE group_x = ? AND group_y = ?").
+	query := session.Query("SELECT X, y, rgb FROM pks.tiles WHERE group_x = ? AND group_y = ?").
+		WithContext(ctx).
 		Idempotent(true).
-		Bind(key.x, key.y)
+		Bind(key.X, key.Y)
 
-	scanner := query.IterContext(ctx).Scanner()
+	scanner := query.Iter().Scanner()
 
 	group := TileGroup{}
 
@@ -29,8 +30,8 @@ func GetTileGroup(ctx context.Context, session *gocql.Session, key GroupKey) (Ti
 			log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetTileGroup")
 		}
 
-		xOff := x - key.x
-		yOff := y - key.y
+		xOff := x - key.X
+		yOff := y - key.Y
 		if xOff < 0 {
 			xOff = 0
 		}
@@ -55,10 +56,10 @@ func scanPlacement(ctx context.Context, scanner gocql.Scanner) Tile {
 	var placement Tile
 
 	var lastUpdatedTime time.Time
-	if err := scanner.Scan(&placement.d.x, &placement.d.y, &placement.d.rgb.R, &placement.d.rgb.G, &placement.d.rgb.B, &lastUpdatedTime); err != nil {
+	if err := scanner.Scan(&placement.D.X, &placement.D.Y, &placement.D.Rgb.R, &placement.D.Rgb.G, &placement.D.Rgb.B, &lastUpdatedTime); err != nil {
 		log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetOneTile")
 	}
-	placement.date = lastUpdatedTime.String()
+	placement.Date = lastUpdatedTime.String()
 
 	return placement
 }
@@ -70,11 +71,12 @@ func GetOneTile(ctx context.Context, session *gocql.Session, x, y int) (Tile, er
 
 	key := KeyFromPoint(x, y)
 
-	query := session.Query("SELECT x, y, rgb, last_updated_time FROM pks.tiles WHERE group_x = ? AND group_y = ? AND x = ? AND y = ? LIMIT 1;").
+	query := session.Query("SELECT X, y, rgb, last_updated_time FROM pks.tiles WHERE group_x = ? AND group_y = ? AND X = ? AND y = ? LIMIT 1;").
+		WithContext(ctx).
 		Idempotent(true).
-		Bind(key.x, key.y, x, y)
+		Bind(key.X, key.Y, x, y)
 
-	scanner := query.IterContext(ctx).Scanner()
+	scanner := query.Iter().Scanner()
 
 	var tile Tile
 
@@ -91,7 +93,7 @@ func GetOneTile(ctx context.Context, session *gocql.Session, x, y int) (Tile, er
 
 	log.Info().
 		Any("trace", trace).
-		Type("key", key).Int("x", x).Int("y", y).Type("tile", tile).
+		Type("key", key).Int("X", x).Int("y", y).Type("tile", tile).
 		Msg("Selected OneTile")
 	return tile, nil
 }
@@ -99,11 +101,12 @@ func GetOneTile(ctx context.Context, session *gocql.Session, x, y int) (Tile, er
 func GetTiles(ctx context.Context, session *gocql.Session, day int64, after time.Time) ([]Tile, error) {
 	trace := ctx.Value("trace")
 
-	query := session.Query("SELECT x, y, rgb, placement_time FROM pks.placements WHERE day = ? AND placement_time <= ? ORDER BY placement_time ASC;").
+	query := session.Query("SELECT X, y, rgb, placement_time FROM pks.placements WHERE day = ? AND placement_time <= ? ORDER BY placement_time ASC;").
+		WithContext(ctx).
 		Idempotent(true).
 		Bind(day, after)
 
-	scanner := query.IterContext(ctx).Scanner()
+	scanner := query.Iter().Scanner()
 
 	var tiles []Tile
 
@@ -130,15 +133,14 @@ func BatchUpsertTile(ctx context.Context, session *gocql.Session, x, y int, rgb 
 
 	day := placementTime.Day()
 
-	batch := session.Batch(gocql.LoggedBatch)
-	batch.Query(
-		"INSERT INTO pks.tiles (group_x, group_y, x, y, rgb, last_updated_ipaddress, last_updated_time) VALUES (?, ?, ?, ?, ?, ?, ?);",
-		key.x, key.y, x, y, rgb, ip, placementTime)
-	batch.Query(
-		"INSERT INTO pks.placements (day, x, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);",
-		day, x, y, rgb, ip, placementTime)
+	batch := session.Batch(gocql.LoggedBatch).
+		WithContext(ctx).
+		Query("INSERT INTO pks.tiles (group_x, group_y, X, y, rgb, last_updated_ipaddress, last_updated_time) VALUES (?, ?, ?, ?, ?, ?, ?);",
+			key.X, key.Y, x, y, rgb, ip, placementTime).
+		Query("INSERT INTO pks.placements (day, X, y, rgb, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?);",
+			day, x, y, rgb, ip, placementTime)
 
-	if err := batch.ExecContext(ctx); err != nil {
+	if err := batch.Exec(); err != nil {
 		log.Err(err).Msg("Error while executing BatchUpsertTile")
 		return err
 	}
@@ -146,7 +148,7 @@ func BatchUpsertTile(ctx context.Context, session *gocql.Session, x, y int, rgb 
 	log.Info().
 		Any("trace", trace).
 		Type("key", key).
-		Int("x", x).Int("y", y).Type("rgb", rgb).
+		Int("X", x).Int("y", y).Type("rgb", rgb).
 		Type("ip", ip).Time("placementTime", placementTime).Type("day", day).
 		Msg("Executed BatchUpsertTile")
 	return nil

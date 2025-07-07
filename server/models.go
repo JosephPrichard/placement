@@ -5,26 +5,31 @@ import "image/color"
 const GroupDim = 100
 const GroupLen = GroupDim * GroupDim * 3
 
+type ServiceError struct {
+	msg  string
+	code int
+}
+
 type GroupKey struct {
-	x int
-	y int
+	X int `json:"x"`
+	Y int `json:"y"`
 }
 
 func KeyFromPoint(x int, y int) GroupKey {
 	groupFromX := (x / GroupDim) * GroupDim
 	groupFromY := (y / GroupDim) * GroupDim
-	return GroupKey{x: groupFromX, y: groupFromY}
+	return GroupKey{X: groupFromX, Y: groupFromY}
 }
 
 type Draw struct {
-	x   int
-	y   int
-	rgb color.RGBA
+	X   int        `json:"X"`
+	Y   int        `json:"y"`
+	Rgb color.RGBA `json:"rgb"`
 }
 
 type Tile struct {
-	d    Draw
-	date string // RFC 3339 timestamp
+	D    Draw   `json:"d"`
+	Date string `json:"date"` // RFC 3339 timestamp
 }
 
 type TileGroup []byte

@@ -2,43 +2,48 @@
 
 A global canvas for the community to draw whatever they want.
 
-## Setup
+## Development
 
-Create a .env file and put these values for local testing, or your own for a prod env.
+Run Development Infra
+
+`docker compose up`
+
+Create .env File
 
 ```
-SCYLLA_URI=127.0.0.1:9042`
+CASSANDRA_CONTACT_POINTS=127.0.0.1:9042`
 REDIS_URL=redis://127.0.0.1:6380/
 ```
+Create Scylla Schema
 
-## Build & Execution
+`docker exec -i placement-scylla-1 cqlsh -f schema.cql`
 
-Run Docker Compose
+Generate Sources
 
 `export PATH="$PATH:$(go env GOPATH)/bin"`
 
 `protoc --go_out=. --go_opt=paths=source_relative pb/placement.proto`
 
-`docker compose up`
+Run App
 
 `go run main.go`
 
-## Scripts
-
-Create Scylla Schema
-
-`docker compose up`
-
-`go run main.go --scripts`
-
 ## Testing
+Tests are full e2e tests run against live databases with mock data. 
+Docker compose is used to set up and teardown all infrastructure required for tests.
 
-Run Docker Compose
+Run Test Infra
 
 `docker compose -p test up`
 
-`echo "SELECT keyspace_name, table_name FROM system_schema.tables;" | docker exec -i test-scylla-1 cqlsh`
+Create Scylla Schema
 
-^This step is important to initialize the scylla instance
+`docker exec -i placement-scylla-test-1 cqlsh -f schema.cql`
+
+Verify Schema
+
+`echo "SELECT table_name FROM system_schema.tables WHERE keyspace_name = 'pks';" | docker exec -i placement-scylla-test-1 cqlsh`
+
+Run Tests
 
 `go test ./...`

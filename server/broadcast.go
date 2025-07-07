@@ -33,9 +33,9 @@ func ListenBroadcast(rdb *redis.Client, eventChan chan Draw) {
 		}
 
 		eventChan <- Draw{
-			x:   int(e.Draw.X),
-			y:   int(e.Draw.Y),
-			rgb: color.RGBA{R: uint8(e.Draw.R), G: uint8(e.Draw.G), B: uint8(e.Draw.B), A: 255},
+			X:   int(e.Draw.X),
+			Y:   int(e.Draw.Y),
+			Rgb: color.RGBA{R: uint8(e.Draw.R), G: uint8(e.Draw.G), B: uint8(e.Draw.B), A: 255},
 		}
 	}
 }
@@ -68,11 +68,11 @@ func MuxDrawChannels(eventChan chan Draw, subChan chan Subscriber) {
 func BroadcastDraw(rdb *redis.Client, draw Draw) error {
 	payload, err := proto.Marshal(&pb.Event{
 		Draw: &pb.Draw{
-			X: int32(draw.x),
-			Y: int32(draw.y),
-			R: int32(draw.rgb.R),
-			G: int32(draw.rgb.G),
-			B: int32(draw.rgb.B),
+			X: int32(draw.X),
+			Y: int32(draw.Y),
+			R: int32(draw.Rgb.R),
+			G: int32(draw.Rgb.G),
+			B: int32(draw.Rgb.B),
 		},
 	})
 	if err != nil {
