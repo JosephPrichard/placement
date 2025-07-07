@@ -2,13 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net/http"
 )
 
 // maps sentinel knownErrors to known error codes
 var knownErrors = map[error]int{
-	TileNotFoundError: http.StatusBadRequest,
+	TileNotFoundError: http.StatusNotFound,
 }
 
 func Error(w http.ResponseWriter, r *http.Request, err error) {
@@ -22,9 +23,13 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 		code = v
 	}
 
-	log.Err(err).
-		Any("trace", ctx.Value("trace")).Int("code", code).
-		Msg("Error occurred in request")
+	var e *zerolog.Event
+	if code == http.StatusInternalServerError {
+		e = log.Err(err)
+	} else {
+		e = log.Info()
+	}
+	e.Any("trace", ctx.Value("trace")).Int("code", code).Msg("Error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

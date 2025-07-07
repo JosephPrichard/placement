@@ -27,7 +27,7 @@ func createCassandra(contactPoints string) *gocql.Session {
 
 	cassandra, err := cluster.CreateSession()
 	if err != nil {
-		log.Panic().Err(err).Msg("Failed to connect to Cassandra")
+		log.Panic().Err(err).Msg("Failed to connect to Cdb")
 	}
 
 	return cassandra
@@ -66,9 +66,9 @@ func main() {
 		go server.MuxDrawChannels(drawChan, subChan)
 
 		state := server.State{
-			Rdb:       rdb,
-			Cassandra: cassandra,
-			SubChan:   subChan,
+			Rdb:     rdb,
+			Cdb:     cassandra,
+			SubChan: subChan,
 		}
 
 		mux := server.HandleServer(state)

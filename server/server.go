@@ -21,31 +21,31 @@ import (
 const DrawPeriod = time.Minute
 
 type State struct {
-	Rdb       *redis.Client
-	Cassandra *gocql.Session
-	SubChan   chan Subscriber
+	Rdb     *redis.Client
+	Cdb     *gocql.Session
+	SubChan chan Subscriber
 }
 
 type Point struct {
-	x int
-	y int
+	X int `json:"x"`
+	Y int `json:"y"`
 }
 
 func parsePoint(url *url.URL) (Point, error) {
 	query := url.Query()
-	xStr := query.Get("X")
+	xStr := query.Get("x")
 	yStr := query.Get("y")
 
 	x, err := strconv.Atoi(xStr)
 	if err != nil {
-		return Point{}, fmt.Errorf("X must be an integer, got %s", xStr)
+		return Point{}, fmt.Errorf("x must be an integer, got %s", xStr)
 	}
 	y, err := strconv.Atoi(yStr)
 	if err != nil {
 		return Point{}, fmt.Errorf("y must be an integer, got %s", yStr)
 	}
 
-	return Point{x: x, y: y}, nil
+	return Point{X: x, Y: y}, nil
 }
 
 func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
@@ -58,10 +58,10 @@ func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info().
-		Any("trace", ctx.Value("trace")).Type("point", point).
+		Any("trace", ctx.Value("trace")).Any("point", point).
 		Msg("Handling GetTile")
 
-	tile, err := GetOneTile(ctx, state.Cassandra, point.x, point.y)
+	tile, err := GetOneTile(ctx, state.Cdb, point.X, point.Y)
 	if errors.Is(err, TileNotFoundError) {
 		Error(w, r, err)
 		return
@@ -85,10 +85,10 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 		Error(w, r, err)
 		return
 	}
-	key := GroupKey{X: point.x, Y: point.y}
+	key := GroupKey{X: point.X, Y: point.Y}
 
 	log.Info().
-		Any("trace", ctx.Value("trace")).Type("point", point).Type("key", key).
+		Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
 		Msg("Handling GetGroup")
 
 	var tg TileGroup
@@ -97,7 +97,11 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tg == nil {
-		if tg, err = GetTileGroup(ctx, state.Cassandra, key); err != nil {
+		log.Info().
+			Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
+			Msg("Executing GetTileGroup to retrieve group, group was not cached")
+
+		if tg, err = GetTileGroup(ctx, state.Cdb, key); err != nil {
 			Error(w, r, err)
 			return
 		}
@@ -148,7 +152,7 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
 	if days <= 0 || after.IsZero() {
 		tiles = make([]Tile, 0)
 	} else {
-		if tiles, err = GetTiles(ctx, state.Cassandra, int64(days), after); err != nil {
+		if tiles, err = GetTiles(ctx, state.Cdb, int64(days), after); err != nil {
 			Error(w, r, err)
 			return
 		}
@@ -190,7 +194,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info().
-		Any("trace", ctx.Value("trace")).Type("draw", draw).
+		Any("trace", ctx.Value("trace")).Any("draw", draw).
 		Msg("Handling PostTile")
 
 	ip := getIpAddr(r)
@@ -223,7 +227,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := BatchUpsertTile(ctx, state.Cassandra, draw.X, draw.Y, draw.Rgb, ip, now); err != nil {
+		if err := BatchUpsertTile(ctx, state.Cdb, BatchUpsertArgs{draw.X, draw.Y, draw.Rgb, ip, now}); err != nil {
 			log.Err(err).Msg("BatchUpsertTile failed in background task")
 		}
 	}()
@@ -258,7 +262,7 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Type("trace", trace).Msg("Client disconnected from sse")
+			log.Info().Any("trace", trace).Msg("Client disconnected from sse")
 			return
 		case draw := <-subChan:
 			_ = json.NewEncoder(w).Encode(draw)

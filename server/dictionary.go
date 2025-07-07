@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"github.com/go-redis/redis"
 	"github.com/rs/zerolog/log"
@@ -43,22 +44,21 @@ func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileG
 	keyStr := fmt.Sprintf("(%d,%d)", key.X, key.Y)
 
 	value, err := rdb.Get(keyStr).Result()
+	if errors.Is(err, redis.Nil) {
+		log.Info().Any("trace", trace).Str("key", keyStr).Msg("Got a nil tile group from cache")
+		return nil, nil
+	}
 	if err != nil {
 		log.Err(err).Str("key", keyStr).Msg("Failed to get tile group from cache")
 		return nil, err
 	}
-
-	log.Info().
-		Any("trace", trace).Str("key", keyStr).Int("len", len(value)).
-		Msg("Got tile group into cache")
-
-	if len(value) == 0 {
+	if value == "" {
+		log.Info().Any("trace", trace).Str("key", keyStr).Msg("Got an empty tile group from cache")
 		return nil, nil
-	} else if len(value) != GroupLen {
-		log.Warn().
-			Any("trace", trace).Str("key", keyStr).Int("len", len(value)).
-			Msg("Failed to get tile group from cache")
-		return nil, fmt.Errorf("internal service Error: invalid cached group length")
+	}
+	if len(value) != GroupLen {
+		log.Warn().Any("trace", trace).Str("key", keyStr).Int("len", len(value)).Msg("Invalid c")
+		return nil, fmt.Errorf("internal service error: invalid cached group length")
 	}
 
 	return []byte(value), nil
@@ -107,7 +107,7 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 	_, err = rdb.SetRange(keyStr, int64(byteOff), string(rgbBytes)).Result()
 	if err != nil {
 		log.Err(err).
-			Any("trace", trace).Str("key", keyStr).Type("draw", d).Int("offset", byteOff).Bytes("rgbBytes", rgbBytes).
+			Any("trace", trace).Str("key", keyStr).Any("draw", d).Int("offset", byteOff).Bytes("rgbBytes", rgbBytes).
 			Msg("Failed to upsert tile group into cache")
 		return err
 	}
