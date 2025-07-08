@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
+	"image/color"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,9 +22,10 @@ import (
 const DrawPeriod = time.Minute
 
 type State struct {
-	Rdb     *redis.Client
-	Cdb     *gocql.Session
-	SubChan chan Subscriber
+	Rdb       *redis.Client
+	Cdb       *gocql.Session
+	SubChan   chan Subscriber
+	UnsubChan chan string
 }
 
 type Point struct {
@@ -85,7 +87,7 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 		Error(w, r, err)
 		return
 	}
-	key := GroupKey{X: point.X, Y: point.Y}
+	key := KeyFromPoint(point.X, point.Y)
 
 	log.Info().
 		Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
@@ -172,7 +174,6 @@ func getIpAddr(r *http.Request) net.IP {
 		return net.ParseIP(strings.TrimSpace(parts[0]))
 	}
 
-	// Fallback to X-Real-IP
 	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
 		return net.ParseIP(xrip)
 	}
@@ -184,18 +185,32 @@ func getIpAddr(r *http.Request) net.IP {
 	return net.ParseIP(ip)
 }
 
+type PostTileBody struct {
+	X   int    `json:"x"`
+	Y   int    `json:"y"`
+	Rgb []byte `json:"rgb"`
+}
+
 func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var draw Draw
-	if err := json.NewDecoder(r.Body).Decode(&draw); err != nil {
-		ErrorCode(w, r, "Failed to deserialize response, expected Draw", http.StatusBadRequest)
+	var body PostTileBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		ErrorCode(w, r, "Failed to deserialize response, expected PostTileBody", http.StatusBadRequest)
 		return
 	}
 
-	log.Info().
-		Any("trace", ctx.Value("trace")).Any("draw", draw).
-		Msg("Handling PostTile")
+	if len(body.Rgb) != 3 {
+		ErrorCode(w, r, fmt.Sprintf("Rgb color tuple must be of length 3, was %d", len(body.Rgb)), http.StatusBadRequest)
+		return
+	}
+	draw := Draw{
+		X:   body.X,
+		Y:   body.Y,
+		Rgb: color.RGBA{R: body.Rgb[0], G: body.Rgb[1], B: body.Rgb[2], A: 255},
+	}
+
+	log.Info().Any("trace", ctx.Value("trace")).Any("draw", draw).Msg("Handling PostTile")
 
 	ip := getIpAddr(r)
 	if ip == nil {
@@ -227,6 +242,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
+		ctx := context.WithValue(context.Background(), "trace", ctx.Value("trace"))
 		if err := BatchUpsertTile(ctx, state.Cdb, BatchUpsertArgs{draw.X, draw.Y, draw.Rgb, ip, now}); err != nil {
 			log.Err(err).Msg("BatchUpsertTile failed in background task")
 		}
@@ -254,17 +270,22 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	trace := r.Header.Get("trace")
-	sseId := uuid.New()
+	sseId := uuid.NewString()
 
 	subChan := make(chan Draw)
 	state.SubChan <- Subscriber{id: sseId, subChan: subChan}
+	defer func() {
+		state.UnsubChan <- sseId
+		close(subChan)
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Any("trace", trace).Msg("Client disconnected from sse")
+			log.Info().Any("trace", trace).Str("sseId", sseId).Msg("Client disconnected from sse")
 			return
 		case draw := <-subChan:
+			log.Info().Any("trace", trace).Str("sseId", sseId).Any("draw", draw).Msg("Client retrieved draw msg")
 			_ = json.NewEncoder(w).Encode(draw)
 			flusher.Flush()
 		}
@@ -281,7 +302,7 @@ func SideChannelMiddleware(next http.Handler) http.Handler {
 		r = r.WithContext(ctx)
 
 		log.Info().
-			Any("trace", r.Context().Value("trace")).Str("url", r.URL.String()).
+			Any("trace", r.Context().Value("trace")).Str("method", r.Method).Str("url", r.URL.String()).
 			Msg("Handling an http request")
 
 		next.ServeHTTP(w, r)

@@ -2,7 +2,6 @@ package server
 
 import (
 	"github.com/go-redis/redis"
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 	"image/color"
@@ -11,7 +10,7 @@ import (
 
 const DrawChannel = "draw-events"
 
-func ListenBroadcast(rdb *redis.Client, eventChan chan Draw) {
+func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
 	pubSub := rdb.Subscribe(DrawChannel)
 	defer func() {
 		if err := pubSub.Close(); err != nil {
@@ -32,7 +31,7 @@ func ListenBroadcast(rdb *redis.Client, eventChan chan Draw) {
 			continue
 		}
 
-		eventChan <- Draw{
+		drawChan <- Draw{
 			X:   int(e.Draw.X),
 			Y:   int(e.Draw.Y),
 			Rgb: color.RGBA{R: uint8(e.Draw.R), G: uint8(e.Draw.G), B: uint8(e.Draw.B), A: 255},
@@ -41,26 +40,25 @@ func ListenBroadcast(rdb *redis.Client, eventChan chan Draw) {
 }
 
 type Subscriber struct {
-	id      uuid.UUID
+	id      string
 	subChan chan Draw
 }
 
-func MuxDrawChannels(eventChan chan Draw, subChan chan Subscriber) {
-	var subscribers []Subscriber
+func MuxEventChannels(drawChan chan Draw, subChan chan Subscriber, unsubChan chan string) {
+	subscribers := make(map[string]Subscriber)
 	for {
 		select {
-		case draw := <-eventChan:
+		case draw := <-drawChan:
 			for _, subscriber := range subscribers {
 				subscriber.subChan <- draw
 			}
-			log.Info().
-				Int("count", len(subscribers)).
-				Msg("Broadcasted to all subscribers")
+			log.Info().Int("count", len(subscribers)).Msg("Broadcasted to all subscribers")
 		case sub := <-subChan:
-			subscribers = append(subscribers, sub)
-			log.Info().
-				Uint32("id", sub.id.ID()).
-				Msg("Appended a subscriber")
+			subscribers[sub.id] = sub
+			log.Info().Str("id", sub.id).Msg("Appended a subscriber")
+		case id := <-unsubChan:
+			delete(subscribers, id)
+			log.Info().Str("id", id).Msg("Removed a subscriber")
 		}
 	}
 }

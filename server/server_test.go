@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/go-redis/redis"
@@ -8,10 +9,13 @@ import (
 	"github.com/gookit/goutil/testutil/assert"
 	"image/color"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,7 +28,7 @@ type Databases struct {
 	rdb *redis.Client
 }
 
-func createTestServer(t *testing.T) (Databases, *httptest.Server, func()) {
+func createTestServer(t *testing.T) (Databases, *httptest.Server, State, func()) {
 	cluster := gocql.NewCluster(cassandraURI)
 	cluster.Consistency = gocql.Quorum
 	cluster.Timeout = time.Second * 1
@@ -42,9 +46,10 @@ func createTestServer(t *testing.T) (Databases, *httptest.Server, func()) {
 	rdb := redis.NewClient(opt)
 
 	state := State{
-		Cdb:     cdb,
-		Rdb:     rdb,
-		SubChan: make(chan Subscriber),
+		Cdb:       cdb,
+		Rdb:       rdb,
+		SubChan:   make(chan Subscriber),
+		UnsubChan: make(chan string),
 	}
 	server := httptest.NewServer(HandleServer(state))
 
@@ -55,15 +60,19 @@ func createTestServer(t *testing.T) (Databases, *httptest.Server, func()) {
 			t.Fatalf("Failed to close redis client: %v", err)
 		}
 	}
-	return Databases{cdb: cdb, rdb: rdb}, server, closer
+	return Databases{cdb: cdb, rdb: rdb}, server, state, closer
 }
 
-func seedCassandra(t *testing.T, cdb *gocql.Session) {
-	ctx := context.WithValue(context.Background(), "trace", "test-trace")
+func seedDatabases(t *testing.T, db Databases) {
+	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
+
+	if err := db.rdb.FlushAll().Err(); err != nil {
+		t.Fatalf("Failed to flush redis db: %v", err)
+	}
 
 	truncateQueries := []*gocql.Query{
-		cdb.Query("TRUNCATE pks.placements;"),
-		cdb.Query("TRUNCATE pks.tiles;"),
+		db.cdb.Query("TRUNCATE pks.placements;"),
+		db.cdb.Query("TRUNCATE pks.tiles;"),
 	}
 	for _, query := range truncateQueries {
 		if err := query.Exec(); err != nil {
@@ -82,17 +91,17 @@ func seedCassandra(t *testing.T, cdb *gocql.Session) {
 			net.IPv4(1, 2, 3, 4), time.Date(2025, time.January, 2, 5, 5, 0, 0, time.UTC)},
 	}
 	for _, arg := range upsertArgs {
-		if err := BatchUpsertTile(ctx, cdb, arg); err != nil {
+		if err := BatchUpsertTile(ctx, db.cdb, arg); err != nil {
 			t.Fatalf("Failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
 		}
 	}
 }
 
 func TestGetTile(t *testing.T) {
-	db, server, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t)
 	defer closer()
 
-	seedCassandra(t, db.cdb)
+	seedDatabases(t, db)
 
 	type Test struct {
 		x, y      int
@@ -101,9 +110,9 @@ func TestGetTile(t *testing.T) {
 	}
 
 	tests := []Test{
-		{x: 0, y: 0, expResp: "", expStatus: http.StatusOK},
-		{x: 2, y: 2, expResp: "", expStatus: http.StatusOK},
-		{x: 10000, y: 10000, expResp: "", expStatus: http.StatusNotFound},
+		{x: 0, y: 0, expResp: `{"d":{"x":0,"y":0,"rgb":{"R":80,"G":120,"B":130,"A":0}},"date":"2025-01-01 00:00:00 +0000 UTC"}`, expStatus: http.StatusOK},
+		{x: 2, y: 2, expResp: `{"d":{"x":2,"y":2,"rgb":{"R":95,"G":45,"B":20,"A":0}},"date":"2025-01-01 15:05:00 +0000 UTC"}`, expStatus: http.StatusOK},
+		{x: 10000, y: 10000, expResp: `{"msg":"tile not found","code":404}`, expStatus: http.StatusNotFound},
 	}
 
 	for i, test := range tests {
@@ -118,18 +127,19 @@ func TestGetTile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to read response: %v", err)
 			}
+			bodyStr := string(body)
 
-			assert.Equal(t, test.expResp, string(body))
+			assert.Equal(t, test.expResp+"\n", bodyStr)
 			assert.Equal(t, test.expStatus, resp.StatusCode)
 		})
 	}
 }
 
 func TestPostTile(t *testing.T) {
-	db, server, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t)
 	defer closer()
 
-	seedCassandra(t, db.cdb)
+	seedDatabases(t, db)
 
 	type Test struct {
 		body      string
@@ -138,8 +148,8 @@ func TestPostTile(t *testing.T) {
 	}
 
 	tests := []Test{
-		{body: "", expResp: "", expStatus: http.StatusOK},
-		{body: "", expResp: "", expStatus: http.StatusBadRequest},
+		{body: `{ "x":0, "y":1, "rgb": [50, 4, 90] }`, expStatus: http.StatusOK},
+		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, expStatus: http.StatusUnauthorized},
 	}
 
 	for i, test := range tests {
@@ -150,22 +160,16 @@ func TestPostTile(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("Failed to read response: %v", err)
-			}
-
-			assert.Equal(t, test.expResp, string(body))
 			assert.Equal(t, test.expStatus, resp.StatusCode)
 		})
 	}
 }
 
 func TestGetGroup(t *testing.T) {
-	db, server, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t)
 	defer closer()
 
-	seedCassandra(t, db.cdb)
+	seedDatabases(t, db)
 
 	type Test struct {
 		x, y      int
@@ -199,10 +203,10 @@ func TestGetGroup(t *testing.T) {
 }
 
 func TestGetPlacements(t *testing.T) {
-	db, server, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t)
 	defer closer()
 
-	seedCassandra(t, db.cdb)
+	seedDatabases(t, db)
 
 	type Test struct {
 		days      int
@@ -233,4 +237,60 @@ func TestGetPlacements(t *testing.T) {
 			assert.Equal(t, test.expStatus, resp.StatusCode)
 		})
 	}
+}
+
+func TestDrawEvents(t *testing.T) {
+	db, server, state, closer := createTestServer(t)
+	defer closer()
+
+	drawChan := make(chan Draw)
+
+	go ListenBroadcast(db.rdb, drawChan)
+	go MuxEventChannels(drawChan, state.SubChan, state.UnsubChan)
+
+	var events []string
+	count := 5
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		resp, err := http.Get(fmt.Sprintf("%s/draw/events", server.URL))
+		if err != nil {
+			log.Fatalf("Failed to send http request: %v", err)
+		}
+		defer resp.Body.Close()
+		log.Printf("Sent draw events request")
+
+		reader := bufio.NewReader(resp.Body)
+		for i := 0; i < count; i++ {
+			line, _ := reader.ReadSlice('\n')
+			if err != nil {
+				log.Fatalf("Failed to read slice from body: %v", err)
+			}
+			events = append(events, string(line))
+		}
+		log.Printf("Finished retrieving draw events")
+	}()
+
+	go func() {
+		defer wg.Done()
+		time.Sleep(time.Second * 1)
+
+		for i := 0; i < count; i++ {
+			if err := BroadcastDraw(db.rdb, Draw{X: 1, Y: 2}); err != nil {
+				log.Fatalf("Failed to broadcast draw: %v", err)
+			}
+		}
+		log.Printf("Done sending draw events")
+	}()
+
+	t.Logf("Waiting for draw events routine")
+
+	wg.Wait()
+
+	expEvents := slices.Repeat([]string{`{"x":1,"y":2,"rgb":{"R":0,"G":0,"B":0,"A":255}}` + "\n"}, count)
+	assert.Equal(t, expEvents, events)
 }

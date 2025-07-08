@@ -26,15 +26,11 @@ func SetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey, group 
 
 	err := rdb.Set(keyStr, string(group), 0).Err()
 	if err != nil {
-		log.Err(err).
-			Any("trace", trace).Str("key", keyStr).
-			Msg("Failed to set tile group into cache")
+		log.Err(err).Any("trace", trace).Str("key", keyStr).Msg("Failed to set tile group into cache")
 		return err
 	}
 
-	log.Info().
-		Any("trace", trace).Str("key", keyStr).
-		Msg("Set tile group into cache")
+	log.Info().Any("trace", trace).Str("key", keyStr).Msg("Set tile group into cache")
 	return nil
 }
 
@@ -57,7 +53,7 @@ func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileG
 		return nil, nil
 	}
 	if len(value) != GroupLen {
-		log.Warn().Any("trace", trace).Str("key", keyStr).Int("len", len(value)).Msg("Invalid c")
+		log.Warn().Any("trace", trace).Str("key", keyStr).Int("len", len(value)).Msg("Invalid length for cached tile group")
 		return nil, fmt.Errorf("internal service error: invalid cached group length")
 	}
 
@@ -69,15 +65,11 @@ func InitCachedGroup(ctx context.Context, rdb *redis.Client, key string) error {
 
 	status, err := zeroInit.Run(rdb, nil, key, GroupLen).Result()
 	if err != nil {
-		log.Err(err).
-			Any("trace", trace).Str("key", key).
-			Msg("Failed to init tile group in the cache")
+		log.Err(err).Any("trace", trace).Str("key", key).Msg("Failed to init tile group in the cache")
 		return err
 	}
 
-	log.Info().
-		Any("trace", trace).Str("key", key).Any("status", status).
-		Msg("Init tile group in cache")
+	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("Init tile group in cache")
 	return nil
 }
 
@@ -119,16 +111,18 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 func AcquireExpiringLock(ctx context.Context, rdb *redis.Client, key string, timeAcquiring time.Time, timeMaybeAcquired time.Time, timeExpires time.Duration) (int64, error) {
 	trace := ctx.Value("trace")
 
-	status, err := expireLock.Run(rdb, nil, key, timeAcquiring.Second(), timeMaybeAcquired.Second(), timeExpires.Seconds()).Result()
+	arg1, arg2, arg3 := timeAcquiring.Unix(), timeMaybeAcquired.Unix(), timeExpires.Seconds()
+	status, err := expireLock.Run(rdb, nil, key, arg1, arg2, arg3).Result()
 	if err != nil {
-		log.Err(err).
-			Any("trace", trace).Str("key", key).
-			Msg("Failed to init tile group in the cache")
+		log.Err(err).Any("trace", trace).Str("key", key).Msg("Failed to acquire an expiring lock")
 		return 0, err
 	}
 
-	log.Info().
-		Any("trace", trace).Str("key", key).Any("status", status).
-		Msg("Updated placement in cache")
-	return status.(int64), nil
+	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("Updated placement in cache")
+
+	ret, ok := status.(int64)
+	if !ok {
+		return 0, fmt.Errorf("internal service error: invalid expiring lock status value: %d, must be int64", status)
+	}
+	return ret, nil
 }

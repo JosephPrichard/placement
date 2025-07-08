@@ -29,23 +29,23 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 	} else {
 		e = log.Info()
 	}
-	e.Any("trace", ctx.Value("trace")).Int("code", code).Msg("Error occurred in request")
+	e.Any("trace", ctx.Value("trace")).Int("Code", code).Msg("Error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 
-	_ = json.NewEncoder(w).Encode(ServiceError{msg: msg, code: code})
+	_ = json.NewEncoder(w).Encode(ServiceError{Msg: msg, Code: code})
 }
 
 func ErrorCode(w http.ResponseWriter, r *http.Request, msg string, code int) {
 	ctx := r.Context()
 
 	log.Warn().
-		Any("trace", ctx.Value("trace")).Str("msg", msg).Int("code", code).
+		Any("trace", ctx.Value("trace")).Str("Msg", msg).Int("Code", code).
 		Msg("Error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 
-	_ = json.NewEncoder(w).Encode(ServiceError{msg: msg, code: code})
+	_ = json.NewEncoder(w).Encode(ServiceError{Msg: msg, Code: code})
 }

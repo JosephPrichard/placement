@@ -6,8 +6,8 @@ const GroupDim = 100
 const GroupLen = GroupDim * GroupDim * 3
 
 type ServiceError struct {
-	msg  string
-	code int
+	Msg  string `json:"msg"`
+	Code int    `json:"code"`
 }
 
 type GroupKey struct {
@@ -22,7 +22,7 @@ func KeyFromPoint(x int, y int) GroupKey {
 }
 
 type Draw struct {
-	X   int        `json:"X"`
+	X   int        `json:"x"`
 	Y   int        `json:"y"`
 	Rgb color.RGBA `json:"rgb"`
 }

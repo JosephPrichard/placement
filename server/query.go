@@ -96,8 +96,7 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 	}
 
 	log.Info().
-		Any("trace", trace).
-		Any("key", key).Int("X", x).Int("y", y).Any("tile", tile).
+		Any("trace", trace).Any("key", key).Int("X", x).Int("y", y).Any("tile", tile).
 		Msg("Selected OneTile")
 	return tile, nil
 }
@@ -126,8 +125,7 @@ func GetTiles(ctx context.Context, cdb *gocql.Session, day int64, after time.Tim
 	}
 
 	log.Info().
-		Any("trace", trace).
-		Int64("day", day).Time("after", after).Type("tiles", tiles).
+		Any("trace", trace).Int64("day", day).Time("after", after).Type("tiles", tiles).
 		Msg("Selected Tiles")
 	return tiles, nil
 }
@@ -173,8 +171,6 @@ func BatchUpsertTile(ctx context.Context, cdb *gocql.Session, args BatchUpsertAr
 		return err
 	}
 
-	log.Info().
-		Any("trace", trace).Any("args", args).
-		Msg("Executed BatchUpsertTile")
+	log.Info().Any("trace", trace).Any("args", args).Msg("Executed BatchUpsertTile")
 	return nil
 }

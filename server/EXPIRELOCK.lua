@@ -11,12 +11,12 @@ local function updateLt(key, timeAcquiring, timeMaybeAcquired, timeExpire)
     local timeActuallyAcquired = redis.call('get', key)
     if timeActuallyAcquired == false or timeActuallyAcquired < timeMaybeAcquired then
         -- the time threshold has been met or time was never recorded, set a new time and acquire the lock for the client
-        timeActuallyAcquired = redis.call('setex', key, timeAcquiring, timeExpire)
+        redis.call('set', key, timeAcquiring, 'EX', timeExpire)
         return -1
     else
         -- time threshold has not been met, return at what time the event happened
-        return timeActuallyAcquired
+        return tonumber(timeActuallyAcquired)
     end
 end
 
-return updateLt(ARGV[1], ARGV[2], ARGV[3])
+return updateLt(ARGV[1], ARGV[2], ARGV[3], ARGV[4])

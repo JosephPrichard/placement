@@ -33,18 +33,12 @@ func createCassandra(contactPoints string) *gocql.Session {
 	return cassandra
 }
 
-func createRedis(redisURL string) (*redis.Client, func()) {
+func createRedis(redisURL string) *redis.Client {
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
 		log.Panic().Err(err).Msg("Failed to connect to Redis")
 	}
-	rdb := redis.NewClient(opt)
-	closer := func() {
-		if err := rdb.Close(); err != nil {
-			log.Err(err).Msg("Failed to close to Redis client")
-		}
-	}
-	return rdb, closer
+	return redis.NewClient(opt)
 }
 
 func main() {
@@ -56,19 +50,20 @@ func main() {
 		cassandra := createCassandra(contactPoints)
 		defer cassandra.Close()
 
-		rdb, closer := createRedis(redisURL)
-		defer closer()
+		rdb := createRedis(redisURL)
 
 		drawChan := make(chan server.Draw)
 		subChan := make(chan server.Subscriber)
+		unSubChan := make(chan string)
 
 		go server.ListenBroadcast(rdb, drawChan)
-		go server.MuxDrawChannels(drawChan, subChan)
+		go server.MuxEventChannels(drawChan, subChan, unSubChan)
 
 		state := server.State{
-			Rdb:     rdb,
-			Cdb:     cassandra,
-			SubChan: subChan,
+			Rdb:       rdb,
+			Cdb:       cassandra,
+			SubChan:   subChan,
+			UnsubChan: unSubChan,
 		}
 
 		mux := server.HandleServer(state)
