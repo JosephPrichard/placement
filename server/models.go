@@ -5,11 +5,6 @@ import "image/color"
 const GroupDim = 100
 const GroupLen = GroupDim * GroupDim * 3
 
-type ServiceError struct {
-	Msg  string `json:"msg"`
-	Code int    `json:"code"`
-}
-
 type GroupKey struct {
 	X int `json:"x"`
 	Y int `json:"y"`

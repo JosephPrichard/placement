@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/go-redis/redis"
 	"github.com/gocql/gocql"
@@ -28,7 +29,7 @@ type Databases struct {
 	rdb *redis.Client
 }
 
-func createTestServer(t *testing.T) (Databases, *httptest.Server, State, func()) {
+func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptest.Server, State, func()) {
 	cluster := gocql.NewCluster(cassandraURI)
 	cluster.Consistency = gocql.Quorum
 	cluster.Timeout = time.Second * 1
@@ -36,12 +37,12 @@ func createTestServer(t *testing.T) (Databases, *httptest.Server, State, func())
 
 	cdb, err := cluster.CreateSession()
 	if err != nil {
-		t.Fatalf("Failed to connect to cdb: %v", err)
+		t.Fatalf("failed to connect to cdb: %v", err)
 	}
 
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
-		t.Fatalf("Failed to connect to redis: %v", err)
+		t.Fatalf("failed to connect to redis: %v", err)
 	}
 	rdb := redis.NewClient(opt)
 
@@ -50,6 +51,7 @@ func createTestServer(t *testing.T) (Databases, *httptest.Server, State, func())
 		Rdb:       rdb,
 		SubChan:   make(chan Subscriber),
 		UnsubChan: make(chan string),
+		Recaptcha: recaptcha,
 	}
 	server := httptest.NewServer(HandleServer(state))
 
@@ -57,7 +59,7 @@ func createTestServer(t *testing.T) (Databases, *httptest.Server, State, func())
 		server.Close()
 		cdb.Close()
 		if err := rdb.Close(); err != nil {
-			t.Fatalf("Failed to close redis client: %v", err)
+			t.Fatalf("failed to close redis client: %v", err)
 		}
 	}
 	return Databases{cdb: cdb, rdb: rdb}, server, state, closer
@@ -67,7 +69,7 @@ func seedDatabases(t *testing.T, db Databases) {
 	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
 
 	if err := db.rdb.FlushAll().Err(); err != nil {
-		t.Fatalf("Failed to flush redis db: %v", err)
+		t.Fatalf("failed to flush redis db: %v", err)
 	}
 
 	truncateQueries := []*gocql.Query{
@@ -76,7 +78,7 @@ func seedDatabases(t *testing.T, db Databases) {
 	}
 	for _, query := range truncateQueries {
 		if err := query.Exec(); err != nil {
-			t.Fatalf("Failed to perform truncate while seeding cassandra db: %v", err)
+			t.Fatalf("failed to perform truncate while seeding cassandra db: %v", err)
 		}
 	}
 
@@ -92,13 +94,30 @@ func seedDatabases(t *testing.T, db Databases) {
 	}
 	for _, arg := range upsertArgs {
 		if err := BatchUpsertTile(ctx, db.cdb, arg); err != nil {
-			t.Fatalf("Failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
+			t.Fatalf("failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
 		}
 	}
 }
 
+func createExpBytes() []byte {
+	// contains the expected bytes for the group 0,0 that is initialized in seedDatabases
+	b := make([]byte, GroupLen)
+	b[0] = 80
+	b[1] = 120
+	b[2] = 130
+	o1 := GetTgOffset(2, 2)
+	b[o1] = 95
+	b[o1+1] = 45
+	b[o1+2] = 20
+	o2 := GetTgOffset(3, 4)
+	b[o2] = 90
+	b[o2+1] = 55
+	b[o2+2] = 50
+	return b
+}
+
 func TestGetTile(t *testing.T) {
-	db, server, _, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t, nil)
 	defer closer()
 
 	seedDatabases(t, db)
@@ -119,13 +138,13 @@ func TestGetTile(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			resp, err := http.Get(fmt.Sprintf("%s/tile?x=%d&y=%d", server.URL, test.x, test.y))
 			if err != nil {
-				t.Fatalf("Failed to send http request: %v", err)
+				t.Fatalf("failed to send http request: %v", err)
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				t.Fatalf("Failed to read response: %v", err)
+				t.Fatalf("failed to read response: %v", err)
 			}
 			bodyStr := string(body)
 
@@ -135,28 +154,51 @@ func TestGetTile(t *testing.T) {
 	}
 }
 
+type RecaptchaMock struct{}
+
+func (m *RecaptchaMock) Verify(_ context.Context, token string, _ string) (bool, error) {
+	switch token {
+	case "test-token":
+		return true, nil
+	case "invalid-token":
+		return false, nil
+	case "external-api-failure":
+		return false, errors.New("stub: failed to hit recaptcha")
+	}
+	panic("no mock RecaptchaMock.Verify implementation matched for arguments")
+}
+
 func TestPostTile(t *testing.T) {
-	db, server, _, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t, &RecaptchaMock{})
 	defer closer()
 
 	seedDatabases(t, db)
 
 	type Test struct {
 		body      string
+		token     string
 		expResp   string
 		expStatus int
 	}
 
 	tests := []Test{
-		{body: `{ "x":0, "y":1, "rgb": [50, 4, 90] }`, expStatus: http.StatusOK},
-		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, expStatus: http.StatusUnauthorized},
+		{body: `{ "x":0, "y":1, "rgb": [50, 4, 90] }`, token: "test-token", expStatus: http.StatusOK},
+		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "test-token", expStatus: http.StatusUnauthorized},
+		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "invalid-token", expStatus: http.StatusUnauthorized},
+		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "external-api-failure", expStatus: http.StatusInternalServerError},
 	}
 
 	for i, test := range tests {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
-			resp, err := http.Post(fmt.Sprintf("%s/tile", server.URL), "application/json", strings.NewReader(test.body))
+			req, err := http.NewRequest("POST", fmt.Sprintf("%s/tile", server.URL), strings.NewReader(test.body))
 			if err != nil {
-				t.Fatalf("Failed to send http request: %v", err)
+				t.Fatalf("failed to construct http request: %v", err)
+			}
+			req.Header.Set(RecaptchaTokenHeader, test.token)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("failed to send http request: %v", err)
 			}
 			defer resp.Body.Close()
 
@@ -166,7 +208,7 @@ func TestPostTile(t *testing.T) {
 }
 
 func TestGetGroup(t *testing.T) {
-	db, server, _, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t, nil)
 	defer closer()
 
 	seedDatabases(t, db)
@@ -177,9 +219,10 @@ func TestGetGroup(t *testing.T) {
 		expStatus int
 	}
 
+	expBytes := createExpBytes()
 	tests := []Test{
-		{x: 0, y: 0, expResp: []byte{}, expStatus: http.StatusOK},
-		{x: 22, y: 10, expResp: []byte{}, expStatus: http.StatusOK},
+		{x: 0, y: 0, expResp: expBytes, expStatus: http.StatusOK},
+		{x: 22, y: 10, expResp: expBytes, expStatus: http.StatusOK},
 		{x: 100_000, y: 100_000, expResp: []byte{}, expStatus: http.StatusOK},
 	}
 
@@ -187,13 +230,13 @@ func TestGetGroup(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			resp, err := http.Get(fmt.Sprintf("%s/group?x=%d&y=%d", server.URL, test.x, test.y))
 			if err != nil {
-				t.Fatalf("Failed to send http request: %v", err)
+				t.Fatalf("failed to send http request: %v", err)
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				t.Fatalf("Failed to read response: %v", err)
+				t.Fatalf("failed to read response: %v", err)
 			}
 
 			assert.Equal(t, test.expResp, body)
@@ -203,7 +246,7 @@ func TestGetGroup(t *testing.T) {
 }
 
 func TestGetPlacements(t *testing.T) {
-	db, server, _, closer := createTestServer(t)
+	db, server, _, closer := createTestServer(t, nil)
 	defer closer()
 
 	seedDatabases(t, db)
@@ -224,13 +267,13 @@ func TestGetPlacements(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			resp, err := http.Get(fmt.Sprintf("%s/placements?days=%d&after=%s", server.URL, test.days, test.after))
 			if err != nil {
-				t.Fatalf("Failed to send http request: %v", err)
+				t.Fatalf("failed to send http request: %v", err)
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				t.Fatalf("Failed to read response: %v", err)
+				t.Fatalf("failed to read response: %v", err)
 			}
 
 			assert.Equal(t, test.expResp, string(body))
@@ -240,7 +283,7 @@ func TestGetPlacements(t *testing.T) {
 }
 
 func TestDrawEvents(t *testing.T) {
-	db, server, state, closer := createTestServer(t)
+	db, server, state, closer := createTestServer(t, nil)
 	defer closer()
 
 	drawChan := make(chan Draw)
@@ -259,20 +302,21 @@ func TestDrawEvents(t *testing.T) {
 
 		resp, err := http.Get(fmt.Sprintf("%s/draw/events", server.URL))
 		if err != nil {
-			log.Fatalf("Failed to send http request: %v", err)
+			log.Fatalf("failed to send http request: %v", err)
 		}
 		defer resp.Body.Close()
-		log.Printf("Sent draw events request")
+		log.Printf("sent draw events request")
 
 		reader := bufio.NewReader(resp.Body)
 		for i := 0; i < count; i++ {
 			line, _ := reader.ReadSlice('\n')
 			if err != nil {
-				log.Fatalf("Failed to read slice from body: %v", err)
+				log.Fatalf("failed to read slice from body: %v", err)
 			}
 			events = append(events, string(line))
+
 		}
-		log.Printf("Finished retrieving draw events")
+		log.Printf("finished retrieving draw events")
 	}()
 
 	go func() {
@@ -281,13 +325,13 @@ func TestDrawEvents(t *testing.T) {
 
 		for i := 0; i < count; i++ {
 			if err := BroadcastDraw(db.rdb, Draw{X: 1, Y: 2}); err != nil {
-				log.Fatalf("Failed to broadcast draw: %v", err)
+				log.Fatalf("failed to broadcast draw: %v", err)
 			}
 		}
-		log.Printf("Done sending draw events")
+		log.Printf("done sending draw events")
 	}()
 
-	t.Logf("Waiting for draw events routine")
+	t.Logf("waiting for draw events routine")
 
 	wg.Wait()
 

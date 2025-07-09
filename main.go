@@ -64,6 +64,7 @@ func main() {
 			Cdb:       cassandra,
 			SubChan:   subChan,
 			UnsubChan: unSubChan,
+			Recaptcha: &server.RecaptchaClient{},
 		}
 
 		mux := server.HandleServer(state)

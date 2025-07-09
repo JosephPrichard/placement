@@ -14,7 +14,7 @@ func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
 	pubSub := rdb.Subscribe(DrawChannel)
 	defer func() {
 		if err := pubSub.Close(); err != nil {
-			log.Err(err).Msg("Error while closing PubSub")
+			log.Err(err).Msg("error while closing PubSub")
 		}
 	}()
 
@@ -22,12 +22,12 @@ func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
 	for m := range redisChan {
 		log.Log().
 			Str("channel", m.Channel).Str("message", m.String()).
-			Msg("Received a message on channel")
+			Msg("received a message on channel")
 
 		var e pb.Event
 		err := proto.Unmarshal([]byte(m.Payload), &e)
 		if err != nil {
-			log.Err(err).Msg("Error while deserializing a message from channel")
+			log.Err(err).Msg("error while deserializing a message from channel")
 			continue
 		}
 
@@ -52,13 +52,13 @@ func MuxEventChannels(drawChan chan Draw, subChan chan Subscriber, unsubChan cha
 			for _, subscriber := range subscribers {
 				subscriber.subChan <- draw
 			}
-			log.Info().Int("count", len(subscribers)).Msg("Broadcasted to all subscribers")
+			log.Info().Int("count", len(subscribers)).Msg("broadcasted to all subscribers")
 		case sub := <-subChan:
 			subscribers[sub.id] = sub
-			log.Info().Str("id", sub.id).Msg("Appended a subscriber")
+			log.Info().Str("id", sub.id).Msg("appended a subscriber")
 		case id := <-unsubChan:
 			delete(subscribers, id)
-			log.Info().Str("id", id).Msg("Removed a subscriber")
+			log.Info().Str("id", id).Msg("removed a subscriber")
 		}
 	}
 }
@@ -74,14 +74,16 @@ func BroadcastDraw(rdb *redis.Client, draw Draw) error {
 		},
 	})
 	if err != nil {
-		log.Err(err).Msg("Failed to serialize Draw message")
+		log.Err(err).Msg("failed to serialize Draw message")
 		return err
 	}
 
 	err = rdb.Publish(DrawChannel, payload).Err()
 	if err != nil {
-		log.Err(err).Msg("Failed to publish Draw message")
+		log.Err(err).Msg("failed to publish Draw message")
 		return err
 	}
+
+	log.Info().Any("draw", draw).Msg("published a Draw message")
 	return nil
 }

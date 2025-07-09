@@ -26,6 +26,7 @@ type State struct {
 	Cdb       *gocql.Session
 	SubChan   chan Subscriber
 	UnsubChan chan string
+	Recaptcha RecaptchaApi
 }
 
 type Point struct {
@@ -50,62 +51,57 @@ func parsePoint(url *url.URL) (Point, error) {
 	return Point{X: x, Y: y}, nil
 }
 
-func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) {
+func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
-		ErrorCode(w, r, err.Error(), http.StatusBadRequest)
-		return
+		return ErrorCode(w, r, err.Error(), http.StatusBadRequest)
 	}
 
 	log.Info().
 		Any("trace", ctx.Value("trace")).Any("point", point).
-		Msg("Handling GetTile")
+		Msg("handling GetTile")
 
 	tile, err := GetOneTile(ctx, state.Cdb, point.X, point.Y)
 	if errors.Is(err, TileNotFoundError) {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 	if err != nil {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(tile)
+	return nil
 }
 
-func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
+func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	point, err := parsePoint(r.URL)
 	if err != nil {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 	key := KeyFromPoint(point.X, point.Y)
 
 	log.Info().
 		Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
-		Msg("Handling GetGroup")
+		Msg("handling GetGroup")
 
 	var tg TileGroup
 	if tg, err = GetCachedGroup(ctx, state.Rdb, key); err != nil {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 	if tg == nil {
 		log.Info().
 			Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
-			Msg("Executing GetTileGroup to retrieve group, group was not cached")
+			Msg("executing GetTileGroup to retrieve group, group was not cached")
 
 		if tg, err = GetTileGroup(ctx, state.Cdb, key); err != nil {
-			Error(w, r, err)
-			return
+			return Error(w, r, err)
 		}
 		go func() {
 			if err = SetCachedGroup(ctx, state.Rdb, key, tg); err != nil {
@@ -118,9 +114,10 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_, _ = w.Write(tg)
+	return nil
 }
 
-func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
+func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	query := r.URL.Query()
@@ -129,7 +126,7 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
 
 	log.Info().
 		Any("trace", ctx.Value("trace")).Str("days", daysStr).Str("after", afterStr).
-		Msg("Handling GetPlacements")
+		Msg("handling GetPlacements")
 
 	var days int
 	var after time.Time
@@ -137,14 +134,12 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
 
 	if daysStr != "" {
 		if days, err = strconv.Atoi(daysStr); err != nil {
-			ErrorCode(w, r, fmt.Sprintf("days must be an integer, got %s", daysStr), http.StatusBadRequest)
-			return
+			return ErrorCode(w, r, fmt.Sprintf("days must be an integer, got %s", daysStr), http.StatusBadRequest)
 		}
 	}
 	if afterStr != "" {
 		if after, err = time.Parse(time.RFC3339, afterStr); err != nil {
-			ErrorCode(w, r, fmt.Sprintf("after must be a valid RFC3339 timestamp, got %s", daysStr), http.StatusBadRequest)
-			return
+			return ErrorCode(w, r, fmt.Sprintf("after must be a valid RFC3339 timestamp, got %s", daysStr), http.StatusBadRequest)
 		}
 	} else {
 		after = time.Now()
@@ -155,8 +150,7 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
 		tiles = make([]Tile, 0)
 	} else {
 		if tiles, err = GetTiles(ctx, state.Cdb, int64(days), after); err != nil {
-			Error(w, r, err)
-			return
+			return Error(w, r, err)
 		}
 	}
 
@@ -164,26 +158,27 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(tiles)
+	return nil
 }
 
 func getIpAddr(r *http.Request) net.IP {
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
+	var ip string
+	var err error
+
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		// X-Forwarded-For may contain multiple IPs: client, proxy1, proxy2, ...
 		parts := strings.Split(xff, ",")
-		return net.ParseIP(strings.TrimSpace(parts[0]))
+		ip = strings.TrimSpace(parts[0])
+	} else if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		ip = xrip
+	} else if ip, _, err = net.SplitHostPort(r.RemoteAddr); err != nil {
+		ip = r.RemoteAddr
 	}
 
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return net.ParseIP(xrip)
-	}
-
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return net.ParseIP(r.RemoteAddr)
-	}
 	return net.ParseIP(ip)
 }
+
+const RecaptchaTokenHeader = "X-Recaptcha-Request-Token"
 
 type PostTileBody struct {
 	X   int    `json:"x"`
@@ -191,38 +186,42 @@ type PostTileBody struct {
 	Rgb []byte `json:"rgb"`
 }
 
-func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
+func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
+
+	token := r.Header.Get(RecaptchaTokenHeader)
 
 	var body PostTileBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		ErrorCode(w, r, "Failed to deserialize response, expected PostTileBody", http.StatusBadRequest)
-		return
+		return ErrorCode(w, r, "failed to deserialize response, expected PostTileBody", http.StatusBadRequest)
 	}
-
 	if len(body.Rgb) != 3 {
-		ErrorCode(w, r, fmt.Sprintf("Rgb color tuple must be of length 3, was %d", len(body.Rgb)), http.StatusBadRequest)
-		return
+		return ErrorCode(w, r, fmt.Sprintf("rgb color tuple must be of length 3, was %d", len(body.Rgb)), http.StatusBadRequest)
 	}
 	draw := Draw{
 		X:   body.X,
 		Y:   body.Y,
 		Rgb: color.RGBA{R: body.Rgb[0], G: body.Rgb[1], B: body.Rgb[2], A: 255},
 	}
-
-	log.Info().Any("trace", ctx.Value("trace")).Any("draw", draw).Msg("Handling PostTile")
-
 	ip := getIpAddr(r)
 	if ip == nil {
-		ErrorCode(w, r, fmt.Sprintf("ip must be a valid IP address"), http.StatusBadRequest)
-		return
+		return ErrorCode(w, r, fmt.Sprintf("ip must be a valid IP address"), http.StatusBadRequest)
+	}
+
+	ipStr := ip.String()
+	log.Info().Any("trace", ctx.Value("trace")).Any("draw", draw).Str("ip", ipStr).Msg("Handling PostTile")
+
+	isSuccess, err := state.Recaptcha.Verify(ctx, token, ipStr)
+	if err != nil {
+		return Error(w, r, err)
+	} else if !isSuccess {
+		return ErrorCode(w, r, fmt.Sprintf("recaptcha token is invalid"), http.StatusUnauthorized)
 	}
 
 	now := time.Now()
 	ret, err := AcquireExpiringLock(ctx, state.Rdb, ip.String(), now, now.Add(-DrawPeriod), DrawPeriod)
 	if err != nil {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 
 	if ret >= 0 {
@@ -230,41 +229,39 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) {
 		difference := now.Sub(timePlaced)
 		remaining := DrawPeriod - difference
 		if remaining < 0 || timePlaced.After(now) {
-			ErrorCode(w, r, fmt.Sprintf("invariant is false: remaining=%d must be larger than 0 and timePlaced=%v must be before now=%v", remaining, timePlaced, now), http.StatusInternalServerError)
-			return
+			return ErrorCode(w, r, fmt.Sprintf("invariant is false: remaining=%d must be larger than 0 and timePlaced=%v must be before now=%v", remaining, timePlaced, now), http.StatusInternalServerError)
 		}
-		ErrorCode(w, r, fmt.Sprintf("%d minutes remaining until player can draw another tile", int64(remaining.Minutes())), http.StatusUnauthorized)
-		return
+		return ErrorCode(w, r, fmt.Sprintf("%d minutes remaining until player can draw another tile", int64(remaining.Minutes())), http.StatusUnauthorized)
 	}
 
 	if err = UpsertCachedGroup(ctx, state.Rdb, draw); err != nil {
-		Error(w, r, err)
-		return
+		return Error(w, r, err)
 	}
 	go func() {
 		ctx := context.WithValue(context.Background(), "trace", ctx.Value("trace"))
 		if err := BatchUpsertTile(ctx, state.Cdb, BatchUpsertArgs{draw.X, draw.Y, draw.Rgb, ip, now}); err != nil {
-			log.Err(err).Msg("BatchUpsertTile failed in background task")
+			log.Err(err).Msg("execution BatchUpsertTile failed in background task")
 		}
 	}()
 	go func() {
 		if err := BroadcastDraw(state.Rdb, draw); err != nil {
-			log.Err(err).Msg("BroadcastDraw failed in background task")
+			log.Err(err).Msg("execution BroadcastDraw failed in background task")
 		}
 	}()
 
 	w.WriteHeader(http.StatusOK)
+	return nil
 }
 
-func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
+func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return nil
 	}
 
 	ctx := r.Context()
@@ -282,17 +279,17 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Any("trace", trace).Str("sseId", sseId).Msg("Client disconnected from sse")
-			return
+			log.Info().Any("trace", trace).Str("sseId", sseId).Msg("client disconnected from sse")
+			return nil
 		case draw := <-subChan:
-			log.Info().Any("trace", trace).Str("sseId", sseId).Any("draw", draw).Msg("Client retrieved draw msg")
+			log.Info().Any("trace", trace).Str("sseId", sseId).Any("draw", draw).Msg("client retrieved draw msg")
 			_ = json.NewEncoder(w).Encode(draw)
 			flusher.Flush()
 		}
 	}
 }
 
-func SideChannelMiddleware(next http.Handler) http.Handler {
+func sideChannelMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		trace := r.Header.Get("trace")
 		if trace == "" {
@@ -303,35 +300,35 @@ func SideChannelMiddleware(next http.Handler) http.Handler {
 
 		log.Info().
 			Any("trace", r.Context().Value("trace")).Str("method", r.Method).Str("url", r.URL.String()).
-			Msg("Handling an http request")
+			Msg("handling an http request")
 
 		next.ServeHTTP(w, r)
 	})
 }
 
+func routeHandler(state State, handler func(state State, w http.ResponseWriter, r *http.Request) error) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := handler(state, w, r); err != nil {
+			log.Info().
+				Any("trace", r.Context().Value("trace")).Str("err", err.Error()).Str("method", r.Method).Str("url", r.URL.String()).
+				Msg("error occurred in route handler func")
+		}
+	}
+}
+
 func HandleServer(state State) http.Handler {
 	r := mux.NewRouter()
 
-	r.Use(SideChannelMiddleware)
+	r.Use(sideChannelMiddleware)
 
 	get := r.Methods(http.MethodGet).Subrouter()
-	get.HandleFunc("/placements", func(w http.ResponseWriter, r *http.Request) {
-		HandleGetPlacements(state, w, r)
-	})
-	get.HandleFunc("/tile", func(w http.ResponseWriter, r *http.Request) {
-		HandleGetTile(state, w, r)
-	})
-	get.HandleFunc("/group", func(w http.ResponseWriter, r *http.Request) {
-		HandleGetGroup(state, w, r)
-	})
-	get.HandleFunc("/draw/events", func(w http.ResponseWriter, r *http.Request) {
-		HandleDrawEvents(state, w, r)
-	})
+	get.HandleFunc("/placements", routeHandler(state, HandleGetPlacements))
+	get.HandleFunc("/tile", routeHandler(state, HandleGetTile))
+	get.HandleFunc("/group", routeHandler(state, HandleGetGroup))
+	get.HandleFunc("/draw/events", routeHandler(state, HandleDrawEvents))
 
 	post := r.Methods(http.MethodPost).Subrouter()
-	post.HandleFunc("/tile", func(w http.ResponseWriter, r *http.Request) {
-		HandlePostTile(state, w, r)
-	})
+	post.HandleFunc("/tile", routeHandler(state, HandlePostTile))
 
 	return r
 }

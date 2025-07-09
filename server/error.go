@@ -2,50 +2,51 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net/http"
 )
+
+type ServiceError struct {
+	Msg  string `json:"msg"`
+	Code int    `json:"code"`
+}
+
+func (e ServiceError) Error() string {
+	return e.Msg
+}
 
 // maps sentinel knownErrors to known error codes
 var knownErrors = map[error]int{
 	TileNotFoundError: http.StatusNotFound,
 }
 
-func Error(w http.ResponseWriter, r *http.Request, err error) {
+func Error(w http.ResponseWriter, r *http.Request, err error) error {
 	ctx := r.Context()
 
-	msg := "an unexpected error has occurred"
-	code := http.StatusInternalServerError
-
-	if v, ok := knownErrors[err]; ok {
-		msg = err.Error()
-		code = v
+	svcErr := ServiceError{Msg: "an unexpected error has occurred", Code: http.StatusInternalServerError}
+	errors.As(err, &svcErr)
+	if c, ok := knownErrors[err]; ok {
+		svcErr.Msg = err.Error()
+		svcErr.Code = c
 	}
 
 	var e *zerolog.Event
-	if code == http.StatusInternalServerError {
+	if svcErr.Code == http.StatusInternalServerError {
 		e = log.Err(err)
 	} else {
 		e = log.Info()
 	}
-	e.Any("trace", ctx.Value("trace")).Int("Code", code).Msg("Error occurred in request")
+	e.Any("trace", ctx.Value("trace")).Any("svcErr", svcErr).Msg("error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	w.WriteHeader(svcErr.Code)
 
-	_ = json.NewEncoder(w).Encode(ServiceError{Msg: msg, Code: code})
+	_ = json.NewEncoder(w).Encode(svcErr)
+	return svcErr
 }
 
-func ErrorCode(w http.ResponseWriter, r *http.Request, msg string, code int) {
-	ctx := r.Context()
-
-	log.Warn().
-		Any("trace", ctx.Value("trace")).Str("Msg", msg).Int("Code", code).
-		Msg("Error occurred in request")
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-
-	_ = json.NewEncoder(w).Encode(ServiceError{Msg: msg, Code: code})
+func ErrorCode(w http.ResponseWriter, r *http.Request, msg string, code int) error {
+	return Error(w, r, ServiceError{Msg: msg, Code: code})
 }

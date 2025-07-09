@@ -29,7 +29,7 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 		var rgb color.RGBA
 
 		if err := scanner.Scan(&x, &y, &rgb.R, &rgb.G, &rgb.B); err != nil {
-			log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetTileGroup")
+			log.Err(err).Any("trace", trace).Msg("error while scanning row of GetTileGroup")
 		}
 
 		xOff := x - key.X
@@ -44,7 +44,7 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 		group = group.SetTile(xOff, yOff, rgb)
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetTileGroup")
+		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetTileGroup")
 		return nil, err
 	}
 
@@ -59,7 +59,7 @@ func scanTile(ctx context.Context, scanner gocql.Scanner) Tile {
 	var t time.Time
 
 	if err := scanner.Scan(&tile.D.X, &tile.D.Y, &tile.D.Rgb.R, &tile.D.Rgb.G, &tile.D.Rgb.B, &t); err != nil {
-		log.Err(err).Any("trace", trace).Msg("Error while scanning row of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("error while scanning row of GetOneTile")
 	}
 	tile.Date = t.String()
 
@@ -87,17 +87,17 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 	if scanner.Next() {
 		tile = scanTile(ctx, scanner)
 	} else {
-		log.Info().Any("trace", trace).Msg("Error while scanning results of GetOneTile, expected to retrieve one row, got none")
+		log.Info().Any("trace", trace).Msg("error while scanning results of GetOneTile, expected to retrieve one row, got none")
 		return Tile{}, TileNotFoundError
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetOneTile")
 		return Tile{}, err
 	}
 
 	log.Info().
 		Any("trace", trace).Any("key", key).Int("X", x).Int("y", y).Any("tile", tile).
-		Msg("Selected OneTile")
+		Msg("selected OneTile")
 	return tile, nil
 }
 
@@ -120,13 +120,13 @@ func GetTiles(ctx context.Context, cdb *gocql.Session, day int64, after time.Tim
 		tiles = append(tiles, tile)
 	}
 	if err := scanner.Err(); err != nil {
-		log.Err(err).Any("trace", trace).Msg("Error while scanning results of GetOneTile")
+		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetOneTile")
 		return nil, err
 	}
 
 	log.Info().
 		Any("trace", trace).Int64("day", day).Time("after", after).Type("tiles", tiles).
-		Msg("Selected Tiles")
+		Msg("selected Tiles")
 	return tiles, nil
 }
 
@@ -167,10 +167,10 @@ func BatchUpsertTile(ctx context.Context, cdb *gocql.Session, args BatchUpsertAr
 			args.PlacementTime)
 
 	if err := cdb.ExecuteBatch(batch); err != nil {
-		log.Err(err).Msg("Error while executing BatchUpsertTile")
+		log.Err(err).Msg("error while executing BatchUpsertTile")
 		return err
 	}
 
-	log.Info().Any("trace", trace).Any("args", args).Msg("Executed BatchUpsertTile")
+	log.Info().Any("trace", trace).Any("args", args).Msg("executed BatchUpsertTile")
 	return nil
 }

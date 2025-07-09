@@ -26,11 +26,11 @@ func SetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey, group 
 
 	err := rdb.Set(keyStr, string(group), 0).Err()
 	if err != nil {
-		log.Err(err).Any("trace", trace).Str("key", keyStr).Msg("Failed to set tile group into cache")
+		log.Err(err).Any("trace", trace).Str("key", keyStr).Msg("failed to set tile group into cache")
 		return err
 	}
 
-	log.Info().Any("trace", trace).Str("key", keyStr).Msg("Set tile group into cache")
+	log.Info().Any("trace", trace).Str("key", keyStr).Msg("set tile group into cache")
 	return nil
 }
 
@@ -40,20 +40,16 @@ func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileG
 	keyStr := fmt.Sprintf("(%d,%d)", key.X, key.Y)
 
 	value, err := rdb.Get(keyStr).Result()
-	if errors.Is(err, redis.Nil) {
-		log.Info().Any("trace", trace).Str("key", keyStr).Msg("Got a nil tile group from cache")
-		return nil, nil
-	}
 	if err != nil {
-		log.Err(err).Str("key", keyStr).Msg("Failed to get tile group from cache")
+		if errors.Is(err, redis.Nil) || value == "" {
+			log.Info().Any("trace", trace).Str("key", keyStr).Msg("got an empty or nil tile group from cache")
+			return nil, nil
+		}
+		log.Err(err).Str("key", keyStr).Msg("failed to get tile group from cache")
 		return nil, err
 	}
-	if value == "" {
-		log.Info().Any("trace", trace).Str("key", keyStr).Msg("Got an empty tile group from cache")
-		return nil, nil
-	}
 	if len(value) != GroupLen {
-		log.Warn().Any("trace", trace).Str("key", keyStr).Int("len", len(value)).Msg("Invalid length for cached tile group")
+		log.Warn().Any("trace", trace).Str("key", keyStr).Int("len", len(value)).Msg("invalid length for cached tile group")
 		return nil, fmt.Errorf("internal service error: invalid cached group length")
 	}
 
@@ -65,11 +61,11 @@ func InitCachedGroup(ctx context.Context, rdb *redis.Client, key string) error {
 
 	status, err := zeroInit.Run(rdb, nil, key, GroupLen).Result()
 	if err != nil {
-		log.Err(err).Any("trace", trace).Str("key", key).Msg("Failed to init tile group in the cache")
+		log.Err(err).Any("trace", trace).Str("key", key).Msg("failed to init tile group in the cache")
 		return err
 	}
 
-	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("Init tile group in cache")
+	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("init tile group in cache")
 	return nil
 }
 
@@ -100,7 +96,7 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 	if err != nil {
 		log.Err(err).
 			Any("trace", trace).Str("key", keyStr).Any("draw", d).Int("offset", byteOff).Bytes("rgbBytes", rgbBytes).
-			Msg("Failed to upsert tile group into cache")
+			Msg("failed to upsert tile group into cache")
 		return err
 	}
 
@@ -114,11 +110,11 @@ func AcquireExpiringLock(ctx context.Context, rdb *redis.Client, key string, tim
 	arg1, arg2, arg3 := timeAcquiring.Unix(), timeMaybeAcquired.Unix(), timeExpires.Seconds()
 	status, err := expireLock.Run(rdb, nil, key, arg1, arg2, arg3).Result()
 	if err != nil {
-		log.Err(err).Any("trace", trace).Str("key", key).Msg("Failed to acquire an expiring lock")
+		log.Err(err).Any("trace", trace).Str("key", key).Msg("failed to acquire an expiring lock")
 		return 0, err
 	}
 
-	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("Updated placement in cache")
+	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("updated placement in cache")
 
 	ret, ok := status.(int64)
 	if !ok {
