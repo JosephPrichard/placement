@@ -64,7 +64,7 @@ func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) error {
 		Msg("handling GetTile")
 
 	tile, err := GetOneTile(ctx, state.Cdb, point.X, point.Y)
-	if errors.Is(err, TileNotFoundError) {
+	if errors.Is(err, TileNotFoundErr) {
 		return Error(w, r, err)
 	}
 	if err != nil {
@@ -211,11 +211,9 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	ipStr := ip.String()
 	log.Info().Any("trace", ctx.Value("trace")).Any("draw", draw).Str("ip", ipStr).Msg("Handling PostTile")
 
-	isSuccess, err := state.Recaptcha.Verify(ctx, token, ipStr)
+	err := state.Recaptcha.Verify(ctx, token, ipStr)
 	if err != nil {
 		return Error(w, r, err)
-	} else if !isSuccess {
-		return ErrorCode(w, r, fmt.Sprintf("recaptcha token is invalid"), http.StatusUnauthorized)
 	}
 
 	now := time.Now()

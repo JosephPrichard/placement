@@ -19,7 +19,8 @@ func (e ServiceError) Error() string {
 
 // maps sentinel knownErrors to known error codes
 var knownErrors = map[error]int{
-	TileNotFoundError: http.StatusNotFound,
+	TileNotFoundErr:   http.StatusNotFound,
+	InvalidCaptchaErr: http.StatusUnauthorized,
 }
 
 func Error(w http.ResponseWriter, r *http.Request, err error) error {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/go-redis/redis"
 	"github.com/rs/zerolog/log"
+	"math"
 	"time"
 )
 
@@ -80,14 +81,8 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 		return err
 	}
 
-	xOff := d.X - key.X
-	yOff := d.Y - key.Y
-	if xOff < 0 {
-		xOff = 0
-	}
-	if yOff < 0 {
-		yOff = 0
-	}
+	xOff := int(math.Abs(float64(d.X - key.X)))
+	yOff := int(math.Abs(float64(d.Y - key.Y)))
 
 	byteOff := GetTgOffset(xOff, yOff)
 	rgbBytes := []byte{d.Rgb.R, d.Rgb.G, d.Rgb.B}

@@ -156,14 +156,14 @@ func TestGetTile(t *testing.T) {
 
 type RecaptchaMock struct{}
 
-func (m *RecaptchaMock) Verify(_ context.Context, token string, _ string) (bool, error) {
+func (m *RecaptchaMock) Verify(_ context.Context, token string, _ string) error {
 	switch token {
 	case "test-token":
-		return true, nil
+		return nil
 	case "invalid-token":
-		return false, nil
+		return InvalidCaptchaErr
 	case "external-api-failure":
-		return false, errors.New("stub: failed to hit recaptcha")
+		return errors.New("stub: failed to hit recaptcha")
 	}
 	panic("no mock RecaptchaMock.Verify implementation matched for arguments")
 }

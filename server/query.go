@@ -6,6 +6,7 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/rs/zerolog/log"
 	"image/color"
+	"math"
 	"net"
 	"time"
 )
@@ -32,14 +33,8 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 			log.Err(err).Any("trace", trace).Msg("error while scanning row of GetTileGroup")
 		}
 
-		xOff := x - key.X
-		yOff := y - key.Y
-		if xOff < 0 {
-			xOff = 0
-		}
-		if yOff < 0 {
-			yOff = 0
-		}
+		xOff := int(math.Abs(float64(x - key.X)))
+		yOff := int(math.Abs(float64(y - key.Y)))
 
 		group = group.SetTile(xOff, yOff, rgb)
 	}
@@ -66,7 +61,7 @@ func scanTile(ctx context.Context, scanner gocql.Scanner) Tile {
 	return tile
 }
 
-var TileNotFoundError = errors.New("tile not found")
+var TileNotFoundErr = errors.New("tile not found")
 
 func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error) {
 	trace := ctx.Value("trace")
@@ -88,7 +83,7 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 		tile = scanTile(ctx, scanner)
 	} else {
 		log.Info().Any("trace", trace).Msg("error while scanning results of GetOneTile, expected to retrieve one row, got none")
-		return Tile{}, TileNotFoundError
+		return Tile{}, TileNotFoundErr
 	}
 	if err := scanner.Err(); err != nil {
 		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetOneTile")
