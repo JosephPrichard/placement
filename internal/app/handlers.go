@@ -1,4 +1,4 @@
-package server
+package app
 
 import (
 	"context"
@@ -217,7 +217,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	}
 
 	now := time.Now()
-	ret, err := AcquireExpiringLock(ctx, state.Rdb, ip.String(), now, now.Add(-DrawPeriod), DrawPeriod)
+	ret, err := AcquireExpiringLock(ctx, state.Rdb, token, now, now.Add(-DrawPeriod), DrawPeriod)
 	if err != nil {
 		return Error(w, r, err)
 	}
@@ -235,14 +235,15 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	if err = UpsertCachedGroup(ctx, state.Rdb, draw); err != nil {
 		return Error(w, r, err)
 	}
+
+	bgTask := context.WithValue(context.Background(), "trace", ctx.Value("trace"))
 	go func() {
-		ctx := context.WithValue(context.Background(), "trace", ctx.Value("trace"))
-		if err := BatchUpsertTile(ctx, state.Cdb, BatchUpsertArgs{draw.X, draw.Y, draw.Rgb, ip, now}); err != nil {
+		if err := BatchUpsertTile(bgTask, state.Cdb, []BatchUpsertArgs{{draw.X, draw.Y, draw.Rgb, ip, now}}); err != nil {
 			log.Err(err).Msg("execution BatchUpsertTile failed in background task")
 		}
 	}()
 	go func() {
-		if err := BroadcastDraw(state.Rdb, draw); err != nil {
+		if err := BroadcastDraw(bgTask, state.Rdb, draw); err != nil {
 			log.Err(err).Msg("execution BroadcastDraw failed in background task")
 		}
 	}()
@@ -264,7 +265,6 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) error
 
 	ctx := r.Context()
 
-	trace := r.Header.Get("trace")
 	sseId := uuid.NewString()
 
 	subChan := make(chan Draw)
@@ -277,10 +277,10 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) error
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Any("trace", trace).Str("sseId", sseId).Msg("client disconnected from sse")
+			log.Info().Str("sseId", sseId).Msg("client disconnected from sse")
 			return nil
 		case draw := <-subChan:
-			log.Info().Any("trace", trace).Str("sseId", sseId).Any("draw", draw).Msg("client retrieved draw msg")
+			log.Info().Str("sseId", sseId).Any("draw", draw).Msg("client retrieved draw msg")
 			_ = json.NewEncoder(w).Encode(draw)
 			flusher.Flush()
 		}
@@ -296,19 +296,29 @@ func sideChannelMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), "trace", trace)
 		r = r.WithContext(ctx)
 
-		log.Info().
-			Any("trace", r.Context().Value("trace")).Str("method", r.Method).Str("url", r.URL.String()).
-			Msg("handling an http request")
-
 		next.ServeHTTP(w, r)
 	})
 }
 
 func routeHandler(state State, handler func(state State, w http.ResponseWriter, r *http.Request) error) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		trace := ctx.Value("trace")
+		method := r.Method
+		path := r.URL.String()
+
+		log.Info().
+			Any("trace", trace).Str("method", method).Str("path", path).
+			Msg("handling an http request")
+
+		defer func() {
+			if ret := recover(); ret != nil {
+				_ = Error(w, r, fmt.Errorf("panic in route handler method=%s path=%s: %v", method, path, ret))
+			}
+		}()
 		if err := handler(state, w, r); err != nil {
 			log.Info().
-				Any("trace", r.Context().Value("trace")).Str("err", err.Error()).Str("method", r.Method).Str("url", r.URL.String()).
+				Any("trace", trace).Str("err", err.Error()).Str("method", method).Str("path", path).
 				Msg("error occurred in route handler func")
 		}
 	}

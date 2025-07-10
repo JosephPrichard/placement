@@ -1,4 +1,4 @@
-package server
+package app
 
 import (
 	"context"
@@ -43,7 +43,7 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 		return nil, err
 	}
 
-	log.Info().Any("trace", trace).Any("key", key).Msg("Selected TileGroup")
+	log.Info().Any("trace", trace).Any("key", key).Msg("selected TileGroup")
 	return group, nil
 }
 
@@ -82,7 +82,6 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 	if scanner.Next() {
 		tile = scanTile(ctx, scanner)
 	} else {
-		log.Info().Any("trace", trace).Msg("error while scanning results of GetOneTile, expected to retrieve one row, got none")
 		return Tile{}, TileNotFoundErr
 	}
 	if err := scanner.Err(); err != nil {
@@ -133,39 +132,42 @@ type BatchUpsertArgs struct {
 	PlacementTime time.Time  `json:"placementTime"`
 }
 
-func BatchUpsertTile(ctx context.Context, cdb *gocql.Session, args BatchUpsertArgs) error {
+func BatchUpsertTile(ctx context.Context, cdb *gocql.Session, argsArr []BatchUpsertArgs) error {
 	trace := ctx.Value("trace")
 
-	key := KeyFromPoint(args.X, args.Y)
-	day := args.PlacementTime.Hour()
+	batch := cdb.Batch(gocql.LoggedBatch).WithContext(ctx)
 
-	batch := cdb.Batch(gocql.LoggedBatch).
-		WithContext(ctx).
-		Query("INSERT INTO pks.tiles (group_x, group_y, x, y, r, g, b, last_updated_ipaddress, last_updated_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
-			key.X,
-			key.Y,
-			args.X,
-			args.Y,
-			args.Rgb.R,
-			args.Rgb.G,
-			args.Rgb.B,
-			args.Ip,
-			args.PlacementTime).
-		Query("INSERT INTO pks.placements (hour, x, y, r, g, b, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-			day,
-			args.X,
-			args.Y,
-			args.Rgb.R,
-			args.Rgb.G,
-			args.Rgb.B,
-			args.Ip,
-			args.PlacementTime)
+	for _, args := range argsArr {
+		key := KeyFromPoint(args.X, args.Y)
+		day := args.PlacementTime.Hour()
+
+		batch = batch.
+			Query("INSERT INTO pks.tiles (group_x, group_y, x, y, r, g, b, last_updated_ipaddress, last_updated_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+				key.X,
+				key.Y,
+				args.X,
+				args.Y,
+				args.Rgb.R,
+				args.Rgb.G,
+				args.Rgb.B,
+				args.Ip,
+				args.PlacementTime).
+			Query("INSERT INTO pks.placements (hour, x, y, r, g, b, ipaddress, placement_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+				day,
+				args.X,
+				args.Y,
+				args.Rgb.R,
+				args.Rgb.G,
+				args.Rgb.B,
+				args.Ip,
+				args.PlacementTime)
+	}
 
 	if err := cdb.ExecuteBatch(batch); err != nil {
 		log.Err(err).Msg("error while executing BatchUpsertTile")
 		return err
 	}
 
-	log.Info().Any("trace", trace).Any("args", args).Msg("executed BatchUpsertTile")
+	log.Info().Any("trace", trace).Any("args", argsArr).Msg("executed BatchUpsertTile")
 	return nil
 }

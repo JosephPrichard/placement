@@ -1,9 +1,11 @@
-package server
+package app
 
-import "image/color"
+import (
+	"image/color"
+)
 
-const GroupDim = 100
-const GroupLen = GroupDim * GroupDim * 3
+var GroupDim = 100
+var GroupLen = GroupDim * GroupDim * 3
 
 type GroupKey struct {
 	X int `json:"x"`

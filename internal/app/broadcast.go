@@ -1,6 +1,7 @@
-package server
+package app
 
 import (
+	"context"
 	"github.com/go-redis/redis"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
@@ -63,7 +64,9 @@ func MuxEventChannels(drawChan chan Draw, subChan chan Subscriber, unsubChan cha
 	}
 }
 
-func BroadcastDraw(rdb *redis.Client, draw Draw) error {
+func BroadcastDraw(ctx context.Context, rdb *redis.Client, draw Draw) error {
+	trace := ctx.Value("trace")
+
 	payload, err := proto.Marshal(&pb.Event{
 		Draw: &pb.Draw{
 			X: int32(draw.X),
@@ -74,16 +77,16 @@ func BroadcastDraw(rdb *redis.Client, draw Draw) error {
 		},
 	})
 	if err != nil {
-		log.Err(err).Msg("failed to serialize Draw message")
+		log.Err(err).Any("trace", trace).Msg("failed to serialize Draw message")
 		return err
 	}
 
 	err = rdb.Publish(DrawChannel, payload).Err()
 	if err != nil {
-		log.Err(err).Msg("failed to publish Draw message")
+		log.Err(err).Any("trace", trace).Msg("failed to publish Draw message")
 		return err
 	}
 
-	log.Info().Any("draw", draw).Msg("published a Draw message")
+	log.Info().Any("trace", trace).Any("draw", draw).Msg("published a Draw message")
 	return nil
 }

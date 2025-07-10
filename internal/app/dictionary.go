@@ -1,4 +1,4 @@
-package server
+package app
 
 import (
 	"context"
@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-//go:embed EXPIRELOCK.lua
+//go:embed redis/EXPIRELOCK.lua
 var expireLockScript string
 
-//go:embed ZEROINIT.lua
+//go:embed redis/ZEROINIT.lua
 var zeroInitScript string
 
 var expireLock = redis.NewScript(expireLockScript)
@@ -54,6 +54,7 @@ func GetCachedGroup(ctx context.Context, rdb *redis.Client, key GroupKey) (TileG
 		return nil, fmt.Errorf("internal service error: invalid cached group length")
 	}
 
+	log.Info().Any("trace", trace).Str("key", keyStr).Msg("retrieved a tile group from the cache")
 	return []byte(value), nil
 }
 
@@ -74,27 +75,26 @@ func UpsertCachedGroup(ctx context.Context, rdb *redis.Client, d Draw) error {
 	trace := ctx.Value("trace")
 
 	key := KeyFromPoint(d.X, d.Y)
-	keyStr := fmt.Sprintf("(%d,%d)", d.X, d.Y)
+	keyStr := fmt.Sprintf("(%d,%d)", key.X, key.Y)
 
-	err := InitCachedGroup(ctx, rdb, keyStr)
-	if err != nil {
+	if err := InitCachedGroup(ctx, rdb, keyStr); err != nil {
 		return err
 	}
 
 	xOff := int(math.Abs(float64(d.X - key.X)))
 	yOff := int(math.Abs(float64(d.Y - key.Y)))
 
-	byteOff := GetTgOffset(xOff, yOff)
+	byteOff := int64(GetTgOffset(xOff, yOff))
 	rgbBytes := []byte{d.Rgb.R, d.Rgb.G, d.Rgb.B}
 
-	_, err = rdb.SetRange(keyStr, int64(byteOff), string(rgbBytes)).Result()
-	if err != nil {
+	if _, err := rdb.SetRange(keyStr, byteOff, string(rgbBytes)).Result(); err != nil {
 		log.Err(err).
-			Any("trace", trace).Str("key", keyStr).Any("draw", d).Int("offset", byteOff).Bytes("rgbBytes", rgbBytes).
+			Any("trace", trace).Str("key", keyStr).Any("draw", d).Int64("offset", byteOff).Bytes("rgbBytes", rgbBytes).
 			Msg("failed to upsert tile group into cache")
 		return err
 	}
 
+	log.Info().Any("trace", trace).Any("key", key).Int64("offset", byteOff).Msg("upsert tile group into the cache")
 	return nil
 }
 
@@ -109,7 +109,7 @@ func AcquireExpiringLock(ctx context.Context, rdb *redis.Client, key string, tim
 		return 0, err
 	}
 
-	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("updated placement in cache")
+	log.Info().Any("trace", trace).Str("key", key).Any("status", status).Msg("acquired a lock with status")
 
 	ret, ok := status.(int64)
 	if !ok {

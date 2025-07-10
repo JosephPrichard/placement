@@ -1,8 +1,11 @@
-package server
+package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/go-redis/redis"
@@ -24,14 +27,22 @@ import (
 const cassandraURI = "127.0.0.1:9042"
 const redisURL = "redis://127.0.0.1:6380/"
 
+//go:embed cql/teardownSchema.cql
+var truncateQuery string
+
 type Databases struct {
 	cdb *gocql.Session
 	rdb *redis.Client
 }
 
+func init() {
+	GroupDim = 5
+	GroupLen = GroupDim * GroupDim * 3
+}
+
 func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptest.Server, State, func()) {
 	cluster := gocql.NewCluster(cassandraURI)
-	cluster.Consistency = gocql.Quorum
+	cluster.Consistency = gocql.All
 	cluster.Timeout = time.Second * 1
 	cluster.Keyspace = "pks"
 
@@ -66,40 +77,63 @@ func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptes
 }
 
 func seedDatabases(t *testing.T, db Databases) {
-	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
+	teardownDatabases(t, db)
 
+	upsertArgs := []BatchUpsertArgs{
+		{
+			X:             0,
+			Y:             0,
+			Rgb:           color.RGBA{R: 80, G: 120, B: 130, A: 255},
+			Ip:            net.IPv4(1, 2, 3, 4),
+			PlacementTime: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			X:             2,
+			Y:             2,
+			Rgb:           color.RGBA{R: 95, G: 45, B: 20, A: 255},
+			Ip:            net.IPv4(4, 3, 2, 1),
+			PlacementTime: time.Date(2025, time.January, 1, 15, 5, 0, 0, time.UTC),
+		},
+		{
+			X:             3,
+			Y:             4,
+			Rgb:           color.RGBA{R: 90, G: 55, B: 50, A: 255},
+			Ip:            net.IPv4(1, 2, 3, 4),
+			PlacementTime: time.Date(2025, time.January, 1, 20, 15, 0, 0, time.UTC),
+		},
+		{
+			X:             GroupDim + 5,
+			Y:             GroupDim + 2,
+			Rgb:           color.RGBA{R: 95, G: 90, B: 45, A: 255},
+			Ip:            net.IPv4(1, 2, 3, 4),
+			PlacementTime: time.Date(2025, time.January, 2, 5, 5, 0, 0, time.UTC),
+		},
+	}
+
+	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
+	for _, arg := range upsertArgs {
+		d := Draw{X: arg.X, Y: arg.Y, Rgb: color.RGBA{R: arg.Rgb.R, G: arg.Rgb.G, B: arg.Rgb.B}}
+		if err := UpsertCachedGroup(ctx, db.rdb, d); err != nil {
+			t.Fatalf("failed to perform UpsertCachedGroup while seeding redis db: %v", err)
+		}
+	}
+	if err := BatchUpsertTile(ctx, db.cdb, upsertArgs); err != nil {
+		t.Fatalf("failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
+	}
+}
+
+func teardownDatabases(t *testing.T, db Databases) {
 	if err := db.rdb.FlushAll().Err(); err != nil {
 		t.Fatalf("failed to flush redis db: %v", err)
 	}
-
-	truncateQueries := []*gocql.Query{
-		db.cdb.Query("TRUNCATE pks.placements;"),
-		db.cdb.Query("TRUNCATE pks.tiles;"),
-	}
-	for _, query := range truncateQueries {
-		if err := query.Exec(); err != nil {
+	for _, stmt := range strings.Split(truncateQuery, "\n") {
+		if err := db.cdb.Query(stmt).Exec(); err != nil {
 			t.Fatalf("failed to perform truncate while seeding cassandra db: %v", err)
-		}
-	}
-
-	upsertArgs := []BatchUpsertArgs{
-		{0, 0, color.RGBA{R: 80, G: 120, B: 130, A: 255},
-			net.IPv4(1, 2, 3, 4), time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)},
-		{2, 2, color.RGBA{R: 95, G: 45, B: 20, A: 255},
-			net.IPv4(4, 3, 2, 1), time.Date(2025, time.January, 1, 15, 5, 0, 0, time.UTC)},
-		{3, 4, color.RGBA{R: 90, G: 55, B: 50, A: 255},
-			net.IPv4(1, 2, 3, 4), time.Date(2025, time.January, 1, 20, 15, 0, 0, time.UTC)},
-		{GroupDim + 5, GroupDim + 2, color.RGBA{R: 95, G: 90, B: 45, A: 255},
-			net.IPv4(1, 2, 3, 4), time.Date(2025, time.January, 2, 5, 5, 0, 0, time.UTC)},
-	}
-	for _, arg := range upsertArgs {
-		if err := BatchUpsertTile(ctx, db.cdb, arg); err != nil {
-			t.Fatalf("failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
 		}
 	}
 }
 
-func createExpBytes() []byte {
+func createExpGroup() []byte {
 	// contains the expected bytes for the group 0,0 that is initialized in seedDatabases
 	b := make([]byte, GroupLen)
 	b[0] = 80
@@ -121,6 +155,7 @@ func TestGetTile(t *testing.T) {
 	defer closer()
 
 	seedDatabases(t, db)
+	defer teardownDatabases(t, db)
 
 	type Test struct {
 		x, y      int
@@ -173,24 +208,34 @@ func TestPostTile(t *testing.T) {
 	defer closer()
 
 	seedDatabases(t, db)
+	defer teardownDatabases(t, db)
 
 	type Test struct {
-		body      string
+		body      PostTileBody
 		token     string
 		expResp   string
 		expStatus int
+		expDraw   *TileGroup
 	}
 
+	eg := TileGroup(createExpGroup())
+	o1 := GetTgOffset(0, 1)
+	eg[o1] = 50
+	eg[o1+1] = 4
+	eg[o1+2] = 90
+
 	tests := []Test{
-		{body: `{ "x":0, "y":1, "rgb": [50, 4, 90] }`, token: "test-token", expStatus: http.StatusOK},
-		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "test-token", expStatus: http.StatusUnauthorized},
-		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "invalid-token", expStatus: http.StatusUnauthorized},
-		{body: `{ "x":0, "y":0, "rgb": [0, 0, 0] }`, token: "external-api-failure", expStatus: http.StatusInternalServerError},
+		{body: PostTileBody{X: 0, Y: 1, Rgb: []byte{50, 4, 90}}, token: "test-token", expStatus: http.StatusOK, expDraw: &eg},
+		{body: PostTileBody{X: 0, Y: 0, Rgb: []byte{0, 0, 0}}, token: "test-token", expStatus: http.StatusUnauthorized},
+		{body: PostTileBody{X: 0, Y: 0, Rgb: []byte{0, 0, 0}}, token: "invalid-token", expStatus: http.StatusUnauthorized},
+		{body: PostTileBody{X: 0, Y: 0, Rgb: []byte{0, 0, 0}}, token: "external-api-failure", expStatus: http.StatusInternalServerError},
 	}
 
 	for i, test := range tests {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
-			req, err := http.NewRequest("POST", fmt.Sprintf("%s/tile", server.URL), strings.NewReader(test.body))
+			b, _ := json.Marshal(test.body)
+
+			req, err := http.NewRequest("POST", fmt.Sprintf("%s/tile", server.URL), bytes.NewReader(b))
 			if err != nil {
 				t.Fatalf("failed to construct http request: %v", err)
 			}
@@ -203,6 +248,21 @@ func TestPostTile(t *testing.T) {
 			defer resp.Body.Close()
 
 			assert.Equal(t, test.expStatus, resp.StatusCode)
+
+			assertCtx := context.WithValue(context.Background(), "trace", "assertion-trace")
+			if test.expDraw != nil {
+				key := KeyFromPoint(test.body.X, test.body.Y)
+				groupCdb, err := GetTileGroup(assertCtx, db.cdb, key)
+				if err != nil {
+					t.Fatalf("failed to get group from db: %v", err)
+				}
+				groupRdb, err := GetCachedGroup(assertCtx, db.rdb, key)
+				if err != nil {
+					t.Fatalf("failed to get group from cache: %v", err)
+				}
+				assert.Equal(t, *test.expDraw, groupCdb)
+				assert.Equal(t, *test.expDraw, groupRdb)
+			}
 		})
 	}
 }
@@ -212,6 +272,7 @@ func TestGetGroup(t *testing.T) {
 	defer closer()
 
 	seedDatabases(t, db)
+	defer teardownDatabases(t, db)
 
 	type Test struct {
 		x, y      int
@@ -219,11 +280,11 @@ func TestGetGroup(t *testing.T) {
 		expStatus int
 	}
 
-	expBytes := createExpBytes()
+	expResp := createExpGroup()
 	tests := []Test{
-		{x: 0, y: 0, expResp: expBytes, expStatus: http.StatusOK},
-		{x: 22, y: 10, expResp: expBytes, expStatus: http.StatusOK},
-		{x: 100_000, y: 100_000, expResp: []byte{}, expStatus: http.StatusOK},
+		{x: 0, y: 0, expResp: expResp, expStatus: http.StatusOK},
+		{x: 4, y: 3, expResp: expResp, expStatus: http.StatusOK},
+		{x: 100, y: 100, expResp: []byte{}, expStatus: http.StatusOK},
 	}
 
 	for i, test := range tests {
@@ -250,6 +311,7 @@ func TestGetPlacements(t *testing.T) {
 	defer closer()
 
 	seedDatabases(t, db)
+	defer teardownDatabases(t, db)
 
 	type Test struct {
 		days      int
@@ -319,12 +381,13 @@ func TestDrawEvents(t *testing.T) {
 		log.Printf("finished retrieving draw events")
 	}()
 
+	ctx := context.WithValue(context.Background(), "trace", "test-trace")
 	go func() {
 		defer wg.Done()
 		time.Sleep(time.Second * 1)
 
 		for i := 0; i < count; i++ {
-			if err := BroadcastDraw(db.rdb, Draw{X: 1, Y: 2}); err != nil {
+			if err := BroadcastDraw(ctx, db.rdb, Draw{X: 1, Y: 2}); err != nil {
 				log.Fatalf("failed to broadcast draw: %v", err)
 			}
 		}

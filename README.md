@@ -16,7 +16,7 @@ REDIS_URL=redis://127.0.0.1:6380/
 ```
 Create Scylla Schema
 
-`type schema.cql | docker exec -i placement-scylla-test-1 cqlsh`
+`type ./internal/app/cql/createSchema.cql | docker exec -i placement-scylla-test-1 cqlsh`
 
 Generate Sources
 
@@ -40,7 +40,7 @@ Create Scylla Schema
 
 `echo "DROP TABLE IF EXISTS pks.placements; DROP TABLE IF EXISTS pks.tiles;" | docker exec -i placement-scylla-test-1 cqlsh`
 
-`type schema.cql | docker exec -i placement-scylla-test-1 cqlsh`
+`type ./internal/app/cql/createSchema.cql | docker exec -i placement-scylla-test-1 cqlsh`
 
 Verify Schema
 

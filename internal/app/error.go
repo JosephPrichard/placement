@@ -1,4 +1,4 @@
-package server
+package app
 
 import (
 	"encoding/json"
@@ -39,7 +39,7 @@ func Error(w http.ResponseWriter, r *http.Request, err error) error {
 	} else {
 		e = log.Info()
 	}
-	e.Any("trace", ctx.Value("trace")).Any("svcErr", svcErr).Msg("error occurred in request")
+	e.Any("trace", ctx.Value("trace")).Any("err", svcErr).Msg("error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(svcErr.Code)
