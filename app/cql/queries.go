@@ -1,4 +1,4 @@
-package app
+package cql
 
 import (
 	"context"
@@ -8,11 +8,14 @@ import (
 	"image/color"
 	"math"
 	"net"
+	"placement/app/models"
 	"time"
 )
 
-func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGroup, error) {
+func GetTileGroup(ctx context.Context, cdb *gocql.Session, x, y int) (models.TileGroup, error) {
 	trace := ctx.Value("trace")
+
+	key := models.KeyFromPoint(x, y)
 
 	query := cdb.Query(`SELECT x, y, r, g, b 
 			FROM pks.tiles 
@@ -23,7 +26,7 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 
 	scanner := query.Iter().Scanner()
 
-	group := TileGroup{}
+	group := models.TileGroup{}
 
 	for scanner.Next() {
 		var x, y int
@@ -36,7 +39,7 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 		xOff := int(math.Abs(float64(x - key.X)))
 		yOff := int(math.Abs(float64(y - key.Y)))
 
-		group = group.SetTile(xOff, yOff, rgb)
+		group = group.SetTileOff(xOff, yOff, rgb)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetTileGroup")
@@ -47,10 +50,10 @@ func GetTileGroup(ctx context.Context, cdb *gocql.Session, key GroupKey) (TileGr
 	return group, nil
 }
 
-func scanTile(ctx context.Context, scanner gocql.Scanner) Tile {
+func scanTile(ctx context.Context, scanner gocql.Scanner) models.Tile {
 	trace := ctx.Value("trace")
 
-	var tile Tile
+	var tile models.Tile
 	var t time.Time
 
 	if err := scanner.Scan(&tile.D.X, &tile.D.Y, &tile.D.Rgb.R, &tile.D.Rgb.G, &tile.D.Rgb.B, &t); err != nil {
@@ -63,10 +66,10 @@ func scanTile(ctx context.Context, scanner gocql.Scanner) Tile {
 
 var TileNotFoundErr = errors.New("tile not found")
 
-func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error) {
+func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (models.Tile, error) {
 	trace := ctx.Value("trace")
 
-	key := KeyFromPoint(x, y)
+	key := models.KeyFromPoint(x, y)
 
 	query := cdb.Query(`SELECT x, y, r, g, b, last_updated_time
 			FROM pks.tiles 
@@ -77,16 +80,16 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 
 	scanner := query.Iter().Scanner()
 
-	var tile Tile
+	var tile models.Tile
 
 	if scanner.Next() {
 		tile = scanTile(ctx, scanner)
 	} else {
-		return Tile{}, TileNotFoundErr
+		return models.Tile{}, TileNotFoundErr
 	}
 	if err := scanner.Err(); err != nil {
 		log.Err(err).Any("trace", trace).Msg("error while scanning results of GetOneTile")
-		return Tile{}, err
+		return models.Tile{}, err
 	}
 
 	log.Info().
@@ -95,7 +98,7 @@ func GetOneTile(ctx context.Context, cdb *gocql.Session, x, y int) (Tile, error)
 	return tile, nil
 }
 
-func GetTiles(ctx context.Context, cdb *gocql.Session, day int64, after time.Time) ([]Tile, error) {
+func GetTiles(ctx context.Context, cdb *gocql.Session, day int64, after time.Time) ([]models.Tile, error) {
 	trace := ctx.Value("trace")
 
 	query := cdb.Query(`SELECT x, y, r, g, b, placement_time 
@@ -107,7 +110,7 @@ func GetTiles(ctx context.Context, cdb *gocql.Session, day int64, after time.Tim
 
 	scanner := query.Iter().Scanner()
 
-	var tiles []Tile
+	var tiles []models.Tile
 
 	for scanner.Next() {
 		tile := scanTile(ctx, scanner)
@@ -138,7 +141,7 @@ func BatchUpsertTile(ctx context.Context, cdb *gocql.Session, argsArr []BatchUps
 	batch := cdb.Batch(gocql.LoggedBatch).WithContext(ctx)
 
 	for _, args := range argsArr {
-		key := KeyFromPoint(args.X, args.Y)
+		key := models.KeyFromPoint(args.X, args.Y)
 		day := args.PlacementTime.Hour()
 
 		batch = batch.

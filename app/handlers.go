@@ -14,6 +14,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"placement/app/clients"
+	"placement/app/cql"
+	"placement/app/dict"
+	"placement/app/models"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +30,7 @@ type State struct {
 	Cdb       *gocql.Session
 	SubChan   chan Subscriber
 	UnsubChan chan string
-	Recaptcha RecaptchaApi
+	Recaptcha clients.RecaptchaApi
 }
 
 type Point struct {
@@ -63,8 +67,8 @@ func HandleGetTile(state State, w http.ResponseWriter, r *http.Request) error {
 		Any("trace", ctx.Value("trace")).Any("point", point).
 		Msg("handling GetTile")
 
-	tile, err := GetOneTile(ctx, state.Cdb, point.X, point.Y)
-	if errors.Is(err, TileNotFoundErr) {
+	tile, err := cql.GetOneTile(ctx, state.Cdb, point.X, point.Y)
+	if errors.Is(err, cql.TileNotFoundErr) {
 		return Error(w, r, err)
 	}
 	if err != nil {
@@ -85,14 +89,14 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return Error(w, r, err)
 	}
-	key := KeyFromPoint(point.X, point.Y)
+	key := models.KeyFromPoint(point.X, point.Y)
 
 	log.Info().
 		Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
 		Msg("handling GetGroup")
 
-	var tg TileGroup
-	if tg, err = GetCachedGroup(ctx, state.Rdb, key); err != nil {
+	var tg models.TileGroup
+	if tg, err = dict.GetCachedGroup(ctx, state.Rdb, point.X, point.Y); err != nil {
 		return Error(w, r, err)
 	}
 	if tg == nil {
@@ -100,11 +104,11 @@ func HandleGetGroup(state State, w http.ResponseWriter, r *http.Request) error {
 			Any("trace", ctx.Value("trace")).Any("point", point).Any("key", key).
 			Msg("executing GetTileGroup to retrieve group, group was not cached")
 
-		if tg, err = GetTileGroup(ctx, state.Cdb, key); err != nil {
+		if tg, err = cql.GetTileGroup(ctx, state.Cdb, point.X, point.Y); err != nil {
 			return Error(w, r, err)
 		}
 		go func() {
-			if err = SetCachedGroup(ctx, state.Rdb, key, tg); err != nil {
+			if err = dict.SetCachedGroup(ctx, state.Rdb, point.X, point.Y, tg); err != nil {
 				log.Err(err).Msg("failed SetCachedGroup in background task")
 			}
 		}()
@@ -145,11 +149,11 @@ func HandleGetPlacements(state State, w http.ResponseWriter, r *http.Request) er
 		after = time.Now()
 	}
 
-	var tiles []Tile
+	var tiles []models.Tile
 	if days <= 0 || after.IsZero() {
-		tiles = make([]Tile, 0)
+		tiles = make([]models.Tile, 0)
 	} else {
-		if tiles, err = GetTiles(ctx, state.Cdb, int64(days), after); err != nil {
+		if tiles, err = cql.GetTiles(ctx, state.Cdb, int64(days), after); err != nil {
 			return Error(w, r, err)
 		}
 	}
@@ -198,7 +202,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	if len(body.Rgb) != 3 {
 		return ErrorCode(w, r, fmt.Sprintf("rgb color tuple must be of length 3, was %d", len(body.Rgb)), http.StatusBadRequest)
 	}
-	draw := Draw{
+	draw := models.Draw{
 		X:   body.X,
 		Y:   body.Y,
 		Rgb: color.RGBA{R: body.Rgb[0], G: body.Rgb[1], B: body.Rgb[2], A: 255},
@@ -217,7 +221,7 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 	}
 
 	now := time.Now()
-	ret, err := AcquireExpiringLock(ctx, state.Rdb, token, now, now.Add(-DrawPeriod), DrawPeriod)
+	ret, err := dict.AcquireExpiringLock(ctx, state.Rdb, token, now, now.Add(-DrawPeriod), DrawPeriod)
 	if err != nil {
 		return Error(w, r, err)
 	}
@@ -232,13 +236,13 @@ func HandlePostTile(state State, w http.ResponseWriter, r *http.Request) error {
 		return ErrorCode(w, r, fmt.Sprintf("%d minutes remaining until player can draw another tile", int64(remaining.Minutes())), http.StatusUnauthorized)
 	}
 
-	if err = UpsertCachedGroup(ctx, state.Rdb, draw); err != nil {
+	if err = dict.UpsertCachedGroup(ctx, state.Rdb, draw); err != nil {
 		return Error(w, r, err)
 	}
 
 	bgTask := context.WithValue(context.Background(), "trace", ctx.Value("trace"))
 	go func() {
-		if err := BatchUpsertTile(bgTask, state.Cdb, []BatchUpsertArgs{{draw.X, draw.Y, draw.Rgb, ip, now}}); err != nil {
+		if err := cql.BatchUpsertTile(bgTask, state.Cdb, []cql.BatchUpsertArgs{{draw.X, draw.Y, draw.Rgb, ip, now}}); err != nil {
 			log.Err(err).Msg("execution BatchUpsertTile failed in background task")
 		}
 	}()
@@ -267,7 +271,7 @@ func HandleDrawEvents(state State, w http.ResponseWriter, r *http.Request) error
 
 	sseId := uuid.NewString()
 
-	subChan := make(chan Draw)
+	subChan := make(chan models.Draw)
 	state.SubChan <- Subscriber{id: sseId, subChan: subChan}
 	defer func() {
 		state.UnsubChan <- sseId

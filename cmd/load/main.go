@@ -8,8 +8,10 @@ import (
 	"image/png"
 	"net"
 	"os"
-	"placement/internal/app"
-	"placement/internal/utils"
+	"placement/app/cql"
+	"placement/app/dict"
+	"placement/app/models"
+	"placement/app/utils"
 	"time"
 )
 
@@ -36,33 +38,33 @@ func main() {
 	rdb, closer := utils.CreateRedis(redisURL)
 	defer closer()
 
-	var argsArr []app.BatchUpsertArgs
+	var cdbArgs []cql.BatchUpsertArgs
+	var rdbArgs []models.Draw
 
 	bounds := img.Bounds()
 	for x := bounds.Min.X; x < bounds.Max.X; x++ {
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 			rgb := img.At(x, y)
 			r, g, b, a := rgb.RGBA()
-			argsArr = append(argsArr, app.BatchUpsertArgs{
+			cdbArg := cql.BatchUpsertArgs{
 				X:             x + *xOff,
 				Y:             y + *yOff,
 				Rgb:           color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: uint8(a)},
 				Ip:            net.IPv4(127, 0, 0, 1),
 				PlacementTime: time.Now(),
-			})
+			}
+			cdbArgs = append(cdbArgs, cdbArg)
+			if cdbArg.Rgb.A == 255 {
+				rdbArgs = append(rdbArgs, models.Draw{X: x, Y: y, Rgb: cdbArg.Rgb})
+			}
 		}
 	}
 
 	ctx := context.WithValue(context.Background(), "trace", "load-image-trace")
-	for _, arg := range argsArr {
-		if arg.Rgb.A == 255 {
-			d := app.Draw{X: arg.X, Y: arg.Y, Rgb: arg.Rgb}
-			if err := app.UpsertCachedGroup(ctx, rdb, d); err != nil {
-				log.Panic().Err(err).Msg("failed exec UpsertCachedGroup")
-			}
-		}
+	if err := dict.BatchDrawCachedGroup(ctx, rdb, rdbArgs); err != nil {
+		log.Panic().Err(err).Msg("failed exec BatchDrawCachedGroup")
 	}
-	if err := app.BatchUpsertTile(ctx, cdb, argsArr); err != nil {
+	if err := cql.BatchUpsertTile(ctx, cdb, cdbArgs); err != nil {
 		log.Panic().Err(err).Msg("failed exec BatchUpsertTile")
 	}
 }

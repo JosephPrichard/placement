@@ -5,8 +5,10 @@ import (
 	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
-	"placement/internal/app"
-	"placement/internal/utils"
+	"placement/app"
+	"placement/app/clients"
+	"placement/app/models"
+	"placement/app/utils"
 )
 
 func main() {
@@ -21,10 +23,12 @@ func main() {
 	cdb := utils.CreateCassandra(contactPoints)
 	defer cdb.Close()
 
-	rdb, closer := utils.CreateRedis(redisURL)
-	defer closer()
+	rdb := utils.CreateRedis(redisURL)
+	defer func() {
+		_ = rdb.Close()
+	}()
 
-	drawChan := make(chan app.Draw)
+	drawChan := make(chan models.Draw)
 	subChan := make(chan app.Subscriber)
 	unSubChan := make(chan string)
 
@@ -36,7 +40,7 @@ func main() {
 		Cdb:       cdb,
 		SubChan:   subChan,
 		UnsubChan: unSubChan,
-		Recaptcha: &app.RecaptchaClient{},
+		Recaptcha: &clients.RecaptchaClient{},
 	}
 
 	mux := app.HandleServer(state)

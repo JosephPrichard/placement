@@ -6,12 +6,13 @@ import (
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 	"image/color"
+	"placement/app/models"
 	"placement/pb"
 )
 
 const DrawChannel = "draw-events"
 
-func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
+func ListenBroadcast(rdb *redis.Client, drawChan chan models.Draw) {
 	pubSub := rdb.Subscribe(DrawChannel)
 	defer func() {
 		if err := pubSub.Close(); err != nil {
@@ -32,7 +33,7 @@ func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
 			continue
 		}
 
-		drawChan <- Draw{
+		drawChan <- models.Draw{
 			X:   int(e.Draw.X),
 			Y:   int(e.Draw.Y),
 			Rgb: color.RGBA{R: uint8(e.Draw.R), G: uint8(e.Draw.G), B: uint8(e.Draw.B), A: 255},
@@ -42,10 +43,10 @@ func ListenBroadcast(rdb *redis.Client, drawChan chan Draw) {
 
 type Subscriber struct {
 	id      string
-	subChan chan Draw
+	subChan chan models.Draw
 }
 
-func MuxEventChannels(drawChan chan Draw, subChan chan Subscriber, unsubChan chan string) {
+func MuxEventChannels(drawChan chan models.Draw, subChan chan Subscriber, unsubChan chan string) {
 	subscribers := make(map[string]Subscriber)
 	for {
 		select {
@@ -64,7 +65,7 @@ func MuxEventChannels(drawChan chan Draw, subChan chan Subscriber, unsubChan cha
 	}
 }
 
-func BroadcastDraw(ctx context.Context, rdb *redis.Client, draw Draw) error {
+func BroadcastDraw(ctx context.Context, rdb *redis.Client, draw models.Draw) error {
 	trace := ctx.Value("trace")
 
 	payload, err := proto.Marshal(&pb.Event{

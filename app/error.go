@@ -6,6 +6,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net/http"
+	"placement/app/clients"
+	"placement/app/cql"
 )
 
 type ServiceError struct {
@@ -19,8 +21,8 @@ func (e ServiceError) Error() string {
 
 // maps sentinel knownErrors to known error codes
 var knownErrors = map[error]int{
-	TileNotFoundErr:   http.StatusNotFound,
-	InvalidCaptchaErr: http.StatusUnauthorized,
+	cql.TileNotFoundErr:       http.StatusNotFound,
+	clients.InvalidCaptchaErr: http.StatusUnauthorized,
 }
 
 func Error(w http.ResponseWriter, r *http.Request, err error) error {

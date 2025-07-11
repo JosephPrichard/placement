@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+const TestCassandraURI = "127.0.0.1:9042"
+const TestRedisURL = "redis://127.0.0.1:6380/"
+
 func CreateCassandra(contactPoints string) *gocql.Session {
 	hosts := strings.Split(contactPoints, ",")
 	cluster := gocql.NewCluster(hosts...)
@@ -22,16 +25,10 @@ func CreateCassandra(contactPoints string) *gocql.Session {
 	return cassandra
 }
 
-func CreateRedis(redisURL string) (*redis.Client, func()) {
+func CreateRedis(redisURL string) *redis.Client {
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
 		log.Panic().Str("redisURL", redisURL).Err(err).Msg("failed to connect to redis")
 	}
-	rdb := redis.NewClient(opt)
-	closer := func() {
-		if err := rdb.Close(); err != nil {
-			log.Panic().Err(err).Msg("failed to close redis")
-		}
-	}
-	return rdb, closer
+	return redis.NewClient(opt)
 }

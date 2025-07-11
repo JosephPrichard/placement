@@ -10,13 +10,18 @@ import (
 	"fmt"
 	"github.com/go-redis/redis"
 	"github.com/gocql/gocql"
-	"github.com/gookit/goutil/testutil/assert"
+	"github.com/stretchr/testify/assert"
 	"image/color"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"placement/app/clients"
+	"placement/app/cql"
+	redis2 "placement/app/dict"
+	"placement/app/models"
+	"placement/app/utils"
 	"slices"
 	"strings"
 	"sync"
@@ -24,10 +29,7 @@ import (
 	"time"
 )
 
-const cassandraURI = "127.0.0.1:9042"
-const redisURL = "redis://127.0.0.1:6380/"
-
-//go:embed cql/teardownSchema.cql
+//go:embed cql/teardown.cql
 var truncateQuery string
 
 type Databases struct {
@@ -36,12 +38,12 @@ type Databases struct {
 }
 
 func init() {
-	GroupDim = 5
-	GroupLen = GroupDim * GroupDim * 3
+	models.GroupDim = 5
+	models.GroupLen = models.GroupDim * models.GroupDim * 3
 }
 
-func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptest.Server, State, func()) {
-	cluster := gocql.NewCluster(cassandraURI)
+func createTestServer(t *testing.T, recaptcha clients.RecaptchaApi) (Databases, *httptest.Server, State, func()) {
+	cluster := gocql.NewCluster(utils.TestCassandraURI)
 	cluster.Consistency = gocql.All
 	cluster.Timeout = time.Second * 1
 	cluster.Keyspace = "pks"
@@ -51,11 +53,7 @@ func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptes
 		t.Fatalf("failed to connect to cdb: %v", err)
 	}
 
-	opt, err := redis.ParseURL(redisURL)
-	if err != nil {
-		t.Fatalf("failed to connect to redis: %v", err)
-	}
-	rdb := redis.NewClient(opt)
+	rdb := utils.CreateRedis(utils.TestRedisURL)
 
 	state := State{
 		Cdb:       cdb,
@@ -69,9 +67,7 @@ func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptes
 	closer := func() {
 		server.Close()
 		cdb.Close()
-		if err := rdb.Close(); err != nil {
-			t.Fatalf("failed to close redis client: %v", err)
-		}
+		_ = rdb.Close()
 	}
 	return Databases{cdb: cdb, rdb: rdb}, server, state, closer
 }
@@ -79,7 +75,7 @@ func createTestServer(t *testing.T, recaptcha RecaptchaApi) (Databases, *httptes
 func seedDatabases(t *testing.T, db Databases) {
 	teardownDatabases(t, db)
 
-	upsertArgs := []BatchUpsertArgs{
+	upsertArgs := []cql.BatchUpsertArgs{
 		{
 			X:             0,
 			Y:             0,
@@ -102,8 +98,8 @@ func seedDatabases(t *testing.T, db Databases) {
 			PlacementTime: time.Date(2025, time.January, 1, 20, 15, 0, 0, time.UTC),
 		},
 		{
-			X:             GroupDim + 5,
-			Y:             GroupDim + 2,
+			X:             models.GroupDim + 5,
+			Y:             models.GroupDim + 2,
 			Rgb:           color.RGBA{R: 95, G: 90, B: 45, A: 255},
 			Ip:            net.IPv4(1, 2, 3, 4),
 			PlacementTime: time.Date(2025, time.January, 2, 5, 5, 0, 0, time.UTC),
@@ -112,12 +108,12 @@ func seedDatabases(t *testing.T, db Databases) {
 
 	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
 	for _, arg := range upsertArgs {
-		d := Draw{X: arg.X, Y: arg.Y, Rgb: color.RGBA{R: arg.Rgb.R, G: arg.Rgb.G, B: arg.Rgb.B}}
-		if err := UpsertCachedGroup(ctx, db.rdb, d); err != nil {
+		d := models.Draw{X: arg.X, Y: arg.Y, Rgb: color.RGBA{R: arg.Rgb.R, G: arg.Rgb.G, B: arg.Rgb.B}}
+		if err := redis2.UpsertCachedGroup(ctx, db.rdb, d); err != nil {
 			t.Fatalf("failed to perform UpsertCachedGroup while seeding redis db: %v", err)
 		}
 	}
-	if err := BatchUpsertTile(ctx, db.cdb, upsertArgs); err != nil {
+	if err := cql.BatchUpsertTile(ctx, db.cdb, upsertArgs); err != nil {
 		t.Fatalf("failed to perform BatchUpsertTile while seeding cassandra db: %v", err)
 	}
 }
@@ -135,15 +131,15 @@ func teardownDatabases(t *testing.T, db Databases) {
 
 func createExpGroup() []byte {
 	// contains the expected bytes for the group 0,0 that is initialized in seedDatabases
-	b := make([]byte, GroupLen)
+	b := make([]byte, models.GroupLen)
 	b[0] = 80
 	b[1] = 120
 	b[2] = 130
-	o1 := GetTgOffset(2, 2)
+	o1 := models.GetTgOffset(2, 2)
 	b[o1] = 95
 	b[o1+1] = 45
 	b[o1+2] = 20
-	o2 := GetTgOffset(3, 4)
+	o2 := models.GetTgOffset(3, 4)
 	b[o2] = 90
 	b[o2+1] = 55
 	b[o2+2] = 50
@@ -196,7 +192,7 @@ func (m *RecaptchaMock) Verify(_ context.Context, token string, _ string) error 
 	case "test-token":
 		return nil
 	case "invalid-token":
-		return InvalidCaptchaErr
+		return clients.InvalidCaptchaErr
 	case "external-api-failure":
 		return errors.New("stub: failed to hit recaptcha")
 	}
@@ -215,11 +211,11 @@ func TestPostTile(t *testing.T) {
 		token     string
 		expResp   string
 		expStatus int
-		expDraw   *TileGroup
+		expDraw   *models.TileGroup
 	}
 
-	eg := TileGroup(createExpGroup())
-	o1 := GetTgOffset(0, 1)
+	eg := models.TileGroup(createExpGroup())
+	o1 := models.GetTgOffset(0, 1)
 	eg[o1] = 50
 	eg[o1+1] = 4
 	eg[o1+2] = 90
@@ -251,12 +247,11 @@ func TestPostTile(t *testing.T) {
 
 			assertCtx := context.WithValue(context.Background(), "trace", "assertion-trace")
 			if test.expDraw != nil {
-				key := KeyFromPoint(test.body.X, test.body.Y)
-				groupCdb, err := GetTileGroup(assertCtx, db.cdb, key)
+				groupCdb, err := cql.GetTileGroup(assertCtx, db.cdb, test.body.X, test.body.Y)
 				if err != nil {
 					t.Fatalf("failed to get group from db: %v", err)
 				}
-				groupRdb, err := GetCachedGroup(assertCtx, db.rdb, key)
+				groupRdb, err := redis2.GetCachedGroup(assertCtx, db.rdb, test.body.X, test.body.Y)
 				if err != nil {
 					t.Fatalf("failed to get group from cache: %v", err)
 				}
@@ -348,7 +343,7 @@ func TestDrawEvents(t *testing.T) {
 	db, server, state, closer := createTestServer(t, nil)
 	defer closer()
 
-	drawChan := make(chan Draw)
+	drawChan := make(chan models.Draw)
 
 	go ListenBroadcast(db.rdb, drawChan)
 	go MuxEventChannels(drawChan, state.SubChan, state.UnsubChan)
@@ -387,7 +382,7 @@ func TestDrawEvents(t *testing.T) {
 		time.Sleep(time.Second * 1)
 
 		for i := 0; i < count; i++ {
-			if err := BroadcastDraw(ctx, db.rdb, Draw{X: 1, Y: 2}); err != nil {
+			if err := BroadcastDraw(ctx, db.rdb, models.Draw{X: 1, Y: 2}); err != nil {
 				log.Fatalf("failed to broadcast draw: %v", err)
 			}
 		}
