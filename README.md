@@ -14,9 +14,9 @@ Create .env File
 CASSANDRA_CONTACT_POINTS=127.0.0.1:9042`
 REDIS_URL=redis://127.0.0.1:6380/
 ```
-Create Scylla Schema
+Create Scylla Schema (if first time)
 
-`type ./internal/app/cql/create.cql | docker exec -i placement-scylla-test-1 cqlsh`
+`type ./app/cql/create.cql | docker exec -i placement-scylla-1 cqlsh`
 
 Generate Sources
 

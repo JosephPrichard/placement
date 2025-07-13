@@ -2,10 +2,6 @@ syntax = "proto3";
 
 option go_package = "Placement/pb";
 
-message Event {
-  Draw draw = 1;
-}
-
 message Draw {
   int32 x = 1;
   int32 y = 2;

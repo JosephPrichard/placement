@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS pks.tiles (
         last_updated_time timestamp,
         PRIMARY KEY ((group_x, group_y), x, y));
 CREATE TABLE IF NOT EXISTS pks.placements (
-		hour bigint,
+		day bigint,
 		x int,
 		y int,
         r tinyint,
@@ -19,4 +19,4 @@ CREATE TABLE IF NOT EXISTS pks.placements (
         b tinyint,
 		ipaddress inet,
 		placement_time timestamp,
-		PRIMARY KEY (hour, placement_time, ipaddress));
+		PRIMARY KEY (day, placement_time, ipaddress));

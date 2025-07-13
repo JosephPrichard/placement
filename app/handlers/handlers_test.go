@@ -1,4 +1,4 @@
-package app
+package handlers
 
 import (
 	"bufio"
@@ -19,18 +19,14 @@ import (
 	"net/http/httptest"
 	"placement/app/clients"
 	"placement/app/cql"
-	redis2 "placement/app/dict"
+	"placement/app/dict"
 	"placement/app/models"
-	"placement/app/utils"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
-
-//go:embed cql/teardown.cql
-var truncateQuery string
 
 type Databases struct {
 	cdb *gocql.Session
@@ -43,7 +39,7 @@ func init() {
 }
 
 func createTestServer(t *testing.T, recaptcha clients.RecaptchaApi) (Databases, *httptest.Server, State, func()) {
-	cluster := gocql.NewCluster(utils.TestCassandraURI)
+	cluster := gocql.NewCluster(cql.TestCassandraURI)
 	cluster.Consistency = gocql.All
 	cluster.Timeout = time.Second * 1
 	cluster.Keyspace = "pks"
@@ -53,7 +49,7 @@ func createTestServer(t *testing.T, recaptcha clients.RecaptchaApi) (Databases, 
 		t.Fatalf("failed to connect to cdb: %v", err)
 	}
 
-	rdb := utils.CreateRedis(utils.TestRedisURL)
+	rdb := dict.CreateRedis(dict.TestRedisURL)
 
 	state := State{
 		Cdb:       cdb,
@@ -109,7 +105,7 @@ func seedDatabases(t *testing.T, db Databases) {
 	ctx := context.WithValue(context.Background(), "trace", "seed-database-trace")
 	for _, arg := range upsertArgs {
 		d := models.Draw{X: arg.X, Y: arg.Y, Rgb: color.RGBA{R: arg.Rgb.R, G: arg.Rgb.G, B: arg.Rgb.B}}
-		if err := redis2.UpsertCachedGroup(ctx, db.rdb, d); err != nil {
+		if err := dict.UpsertCachedGroup(ctx, db.rdb, d); err != nil {
 			t.Fatalf("failed to perform UpsertCachedGroup while seeding redis db: %v", err)
 		}
 	}
@@ -122,7 +118,7 @@ func teardownDatabases(t *testing.T, db Databases) {
 	if err := db.rdb.FlushAll().Err(); err != nil {
 		t.Fatalf("failed to flush redis db: %v", err)
 	}
-	for _, stmt := range strings.Split(truncateQuery, "\n") {
+	for _, stmt := range strings.Split(cql.TeardownQuery, "\n") {
 		if err := db.cdb.Query(stmt).Exec(); err != nil {
 			t.Fatalf("failed to perform truncate while seeding cassandra db: %v", err)
 		}
@@ -251,7 +247,7 @@ func TestPostTile(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to get group from db: %v", err)
 				}
-				groupRdb, err := redis2.GetCachedGroup(assertCtx, db.rdb, test.body.X, test.body.Y)
+				groupRdb, err := dict.GetCachedGroup(assertCtx, db.rdb, test.body.X, test.body.Y)
 				if err != nil {
 					t.Fatalf("failed to get group from cache: %v", err)
 				}
@@ -301,7 +297,7 @@ func TestGetGroup(t *testing.T) {
 	}
 }
 
-func TestGetPlacements(t *testing.T) {
+func TestGetTiles(t *testing.T) {
 	db, server, _, closer := createTestServer(t, nil)
 	defer closer()
 
@@ -322,7 +318,7 @@ func TestGetPlacements(t *testing.T) {
 
 	for i, test := range tests {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
-			resp, err := http.Get(fmt.Sprintf("%s/placements?days=%d&after=%s", server.URL, test.days, test.after))
+			resp, err := http.Get(fmt.Sprintf("%s/tiles?days=%d&after=%s", server.URL, test.days, test.after))
 			if err != nil {
 				t.Fatalf("failed to send http request: %v", err)
 			}

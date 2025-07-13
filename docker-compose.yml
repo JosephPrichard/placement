@@ -11,15 +11,21 @@ services:
       - SCYLLA_CLUSTER_NAME=ScyllaCluster
       - SCYLLA_LISTEN_ADDRESS=0.0.0.0
       - SCYLLA_SEEDS=scylla
+    expose:
+      - 7000
+      - 7001
+      - 7199
+      - 9042
+      - 9160
     ports:
-      - "9042:9042"  # CQL port
-      - "7000:7000"  # Internode communication
-      - "7001:7001"  # TLS internode communication
-      - "7199:7199"  # JMX port
-      - "9142:9142"  # Scylla monitoring port
+      - "9042:9042"
+      - "7000:7000"
+      - "7001:7001"
+      - "7199:7199"
+      - "9142:9142"
     volumes:
       - scylla-data:/var/server/scylla
   redis:
     image: redis/redis-stack-server
     ports:
-      - "6380:6379"
+      - "6379:6379"

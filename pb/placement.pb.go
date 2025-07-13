@@ -21,50 +21,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Draw          *Draw                  `protobuf:"bytes,1,opt,name=draw,proto3" json:"draw,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Event) Reset() {
-	*x = Event{}
-	mi := &file_pb_placement_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Event) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Event) ProtoMessage() {}
-
-func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_pb_placement_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Event.ProtoReflect.Descriptor instead.
-func (*Event) Descriptor() ([]byte, []int) {
-	return file_pb_placement_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *Event) GetDraw() *Draw {
-	if x != nil {
-		return x.Draw
-	}
-	return nil
-}
-
 type Draw struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	X             int32                  `protobuf:"varint,1,opt,name=x,proto3" json:"x,omitempty"`
@@ -78,7 +34,7 @@ type Draw struct {
 
 func (x *Draw) Reset() {
 	*x = Draw{}
-	mi := &file_pb_placement_proto_msgTypes[1]
+	mi := &file_pb_placement_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -90,7 +46,7 @@ func (x *Draw) String() string {
 func (*Draw) ProtoMessage() {}
 
 func (x *Draw) ProtoReflect() protoreflect.Message {
-	mi := &file_pb_placement_proto_msgTypes[1]
+	mi := &file_pb_placement_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -103,7 +59,7 @@ func (x *Draw) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Draw.ProtoReflect.Descriptor instead.
 func (*Draw) Descriptor() ([]byte, []int) {
-	return file_pb_placement_proto_rawDescGZIP(), []int{1}
+	return file_pb_placement_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Draw) GetX() int32 {
@@ -145,9 +101,7 @@ var File_pb_placement_proto protoreflect.FileDescriptor
 
 const file_pb_placement_proto_rawDesc = "" +
 	"\n" +
-	"\x12pb/placement.proto\"\"\n" +
-	"\x05Event\x12\x19\n" +
-	"\x04draw\x18\x01 \x01(\v2\x05.DrawR\x04draw\"L\n" +
+	"\x12pb/placement.proto\"L\n" +
 	"\x04Draw\x12\f\n" +
 	"\x01x\x18\x01 \x01(\x05R\x01x\x12\f\n" +
 	"\x01y\x18\x02 \x01(\x05R\x01y\x12\f\n" +
@@ -167,18 +121,16 @@ func file_pb_placement_proto_rawDescGZIP() []byte {
 	return file_pb_placement_proto_rawDescData
 }
 
-var file_pb_placement_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_pb_placement_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_pb_placement_proto_goTypes = []any{
-	(*Event)(nil), // 0: Event
-	(*Draw)(nil),  // 1: Draw
+	(*Draw)(nil), // 0: Draw
 }
 var file_pb_placement_proto_depIdxs = []int32{
-	1, // 0: Event.draw:type_name -> Draw
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_pb_placement_proto_init() }
@@ -192,7 +144,7 @@ func file_pb_placement_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pb_placement_proto_rawDesc), len(file_pb_placement_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

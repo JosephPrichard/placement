@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -37,14 +37,14 @@ func (c *RecaptchaClient) sendVerifyRequest(req *http.Request, retry int) (Verif
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		log.Err(err).Int("retries", retry).Msg("failed to send verify captcha request")
+		slog.Error("failed to send verify captcha request", "retries", retry, "error", err)
 		return VerifyResp{}, err
 	}
 	defer resp.Body.Close()
 
 	err = json.NewDecoder(resp.Body).Decode(&verifyResp)
 	if err != nil {
-		log.Err(err).Int("retries", retry).Msg("failed to deserialize verify captcha response")
+		slog.Error("failed to deserialize verify captcha response", "retries", retry, "error", err)
 		return VerifyResp{}, err
 	}
 
@@ -69,7 +69,7 @@ func (c *RecaptchaClient) Verify(ctx context.Context, token string, remoteIP str
 
 	req, err = http.NewRequest(http.MethodPost, "https://www.google.com/recaptcha/api/siteverify", bytes.NewBufferString(data.Encode()))
 	if err != nil {
-		log.Err(err).Msg("failed to create verify captcha request")
+		slog.Error("failed to create verify captcha request", "error", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -82,13 +82,11 @@ func (c *RecaptchaClient) Verify(ctx context.Context, token string, remoteIP str
 
 		resp, err = c.sendVerifyRequest(req, retry)
 		if err != nil {
-			// retry after a delay whenever the http request fails, the error will be captured outside the loop
+			// retry on failure
 			continue
 		}
 
-		log.Info().
-			Any("trace", ctx.Value("trace")).Any("response", resp).Any("values", data).
-			Msg("received verify captcha response with content")
+		slog.Info("received verify captcha response with content", "trace", ctx.Value("trace"), "response", resp, "values", data)
 
 		if resp.Success && len(resp.ErrorCodes) == 0 {
 			return nil

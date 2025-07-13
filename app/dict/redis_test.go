@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"image/color"
 	"placement/app/models"
-	"placement/app/utils"
 	"testing"
 )
 
@@ -22,7 +21,7 @@ func teardownRedis(t *testing.T, rdb *redis.Client) {
 }
 
 func TestEchoCachedGroup(t *testing.T) {
-	rdb := utils.CreateRedis(utils.TestRedisURL)
+	rdb := CreateRedis(TestRedisURL)
 	defer func() {
 		_ = rdb.Close()
 	}()
@@ -45,7 +44,7 @@ func TestEchoCachedGroup(t *testing.T) {
 }
 
 func TestEmptyCachedGroup(t *testing.T) {
-	rdb := utils.CreateRedis(utils.TestRedisURL)
+	rdb := CreateRedis(TestRedisURL)
 	defer func() {
 		_ = rdb.Close()
 	}()
@@ -62,7 +61,7 @@ func TestEmptyCachedGroup(t *testing.T) {
 }
 
 func TestBatchDrawCachedGroup(t *testing.T) {
-	rdb := utils.CreateRedis(utils.TestRedisURL)
+	rdb := CreateRedis(TestRedisURL)
 	defer func() {
 		_ = rdb.Close()
 	}()

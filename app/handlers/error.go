@@ -1,10 +1,9 @@
-package app
+package handlers
 
 import (
 	"encoding/json"
 	"errors"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"log/slog"
 	"net/http"
 	"placement/app/clients"
 	"placement/app/cql"
@@ -35,13 +34,11 @@ func Error(w http.ResponseWriter, r *http.Request, err error) error {
 		svcErr.Code = c
 	}
 
-	var e *zerolog.Event
 	if svcErr.Code == http.StatusInternalServerError {
-		e = log.Err(err)
+		slog.Error("unexpected error occurred in request", "trace", ctx.Value("trace"), "err", err)
 	} else {
-		e = log.Info()
+		slog.Info("service error occurred in request", "trace", ctx.Value("trace"), "err", err)
 	}
-	e.Any("trace", ctx.Value("trace")).Any("err", svcErr).Msg("error occurred in request")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(svcErr.Code)
